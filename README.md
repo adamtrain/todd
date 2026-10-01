@@ -227,6 +227,7 @@ Other commands:
 | `todd pull [id] [-y] [--links-only]` | Pull from Jira and GitHub: re-read the links and update the task to match (see below). |
 | `todd role 12 3 reply` | Say what link 3 is for. `reply` marks where you'll reply; refiling keeps it. |
 | `todd links 12 [--labels]` | Print the links bare, one per line, so your terminal can make them clickable. |
+| `todd open 12 [3]` | Open a task's links (or just link 3) in Slack or your browser. |
 | `todd followup add 12 "Tell Theo" [--to Theo] [--on fri \| --when done] [--unless in_review]` | Add a follow-up yourself. |
 | `todd followup done\|drop\|snooze N` | Close a follow-up (↪N), or move it to another day (`snooze 4 +7`). |
 | `todd projects [--all]` | Every project, with all its tasks in order (finished ones too) and what's blocking what. |
