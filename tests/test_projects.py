@@ -9,7 +9,7 @@ from todd.errors import ToddError
 from todd.models import State, Task, TaskRef, standing
 
 from .conftest import PR_URL, SLACK_DM, answer, load
-from .test_cli import saved, todd
+from .test_cli import named, saved, todd
 
 TITLES = [
     "Land the cluster-b stack",
@@ -170,8 +170,9 @@ def test_finishing_a_task_unblocks_the_next(tickets):
     assert "#1 Launch the live feature for Acme is now to do" in out
     now = " ".join(todd().output.split())
     assert "Set up the bug bash" in now and "1 blocked" in now
-    out = todd("reopen", "2", "-J").output
-    assert "#3 Set up the bug bash waits on this again." in out
+    # Finishing #2 freed its number: the tasks after it moved down, and it's now #4.
+    out = todd("reopen", "4", "-J").output
+    assert "#2 Set up the bug bash waits on this again." in out
 
 
 def test_starting_a_blocked_task_warns(tickets):
@@ -181,9 +182,9 @@ def test_starting_a_blocked_task_warns(tickets):
 
 def test_a_project_is_done_when_its_tasks_are(tickets, picks):
     launch(tickets)
-    for task_id in (2, 3):
-        todd("done", str(task_id), "-J")
-    out = todd("done", "4", "-J").output
+    for _ in TITLES[:2]:
+        todd("done", "2", "-J")  # each time, the next task has moved down to #2
+    out = todd("done", "2", "-J").output
     assert "#1 Launch the live feature for Acme is now done: all 3 tasks finished" in out
     assert all(not question.startswith("That was the last") for question, _, _ in picks.asked)
     assert "PROJECT   DONE" in todd("show", "1").output
@@ -194,19 +195,20 @@ def test_a_project_is_done_when_its_tasks_are(tickets, picks):
     # last open task by default; here there isn't one.
     tickets.answers.append(answer(links=[], title="Write the launch announcement"))
     todd("add", "write the launch announcement", "--in", "1")
-    announcement = saved(5)
+    announcement = named("Write the launch announcement")
+    assert announcement.id == 2  # the first number after what's open, which is the project
     assert (announcement.project_id, announcement.project_position) == (1, 4)
     assert announcement.blockers == []
     assert "to do · 1 of 4 tasks open" in todd("projects").output
-    assert "is now done: all 4 tasks finished" in todd("done", "5", "-J").output
+    assert "is now done: all 4 tasks finished" in todd("done", "2", "-J").output
 
 
 def test_a_projects_own_follow_ups_come_due_when_its_tasks_get_it_there(tickets):
     launch(tickets)
     todd("followup", "add", "1", "Tell", "sales", "it's", "live", "--when", "done")
-    for task_id in (2, 3):
-        assert "Follow-up due" not in todd("done", str(task_id), "-J").output
-    assert "Follow-up due: Tell sales it's live" in todd("done", "4", "-J").output
+    for _ in TITLES[:2]:
+        assert "Follow-up due" not in todd("done", "2", "-J").output
+    assert "Follow-up due: Tell sales it's live" in todd("done", "2", "-J").output
 
 
 def test_tasks_can_go_on_at_the_same_time(shell):
@@ -228,10 +230,10 @@ def test_tasks_can_go_on_at_the_same_time(shell):
     assert "Unblocked: #3 Write the docs" in out and "Unblocked: #4 Brief support" in out
     now = todd().output
     assert "Write the docs" in now and "Brief support" in now and "Announce it" not in now
-    todd("done", "3", "-J")
-    assert saved(5).blocked  # still waits on briefing support
-    todd("done", "4", "-J")
-    assert not saved(5).blocked
+    todd("done", str(named("Write the docs").id), "-J")
+    assert named("Announce it").blocked  # still waits on briefing support
+    todd("done", str(named("Brief support").id), "-J")
+    assert not named("Announce it").blocked
 
 
 def test_adding_to_a_project_waits_on_its_last_open_task(tickets):
@@ -307,12 +309,12 @@ def test_dropping_a_project_drops_its_open_tasks(tickets, picks):
     todd("drop", "1", "-J")  # Enter on the default: No
     assert picks.asked[-1][0] == "Drop “Launch the live feature for Acme” and its 2 open tasks?"
     assert picks.asked[-1][2] == "no"
-    assert [saved(n).state for n in (3, 4)] == [State.TODO, State.TODO]
+    assert [named(title).state for title in TITLES[1:]] == [State.TODO, State.TODO]
 
     picks.script.append("yes")
     out = todd("drop", "1", "-J").output
-    assert "#1 to do → dropped" in out and "#3 to do → dropped" in out
-    assert [saved(n).state for n in (2, 3, 4)] == [State.DONE, State.DROPPED, State.DROPPED]
+    assert "#1 to do → dropped" in out and "#2 to do → dropped" in out
+    assert [named(t).state for t in TITLES] == [State.DONE, State.DROPPED, State.DROPPED]
     assert "Launch the live feature" not in todd("projects").output
     assert "dropped · 0 of 3 tasks open" in todd("projects", "--all").output
     assert "Project #1 was dropped" in todd("add", "x", "--in", "1").output
@@ -320,7 +322,7 @@ def test_dropping_a_project_drops_its_open_tasks(tickets, picks):
     # Bringing it back brings back what was dropped with it, not what was already finished.
     out = todd("reopen", "1", "-J").output
     assert "#1 dropped → to do" in out
-    assert [saved(n).state for n in (2, 3, 4)] == [State.DONE, State.TODO, State.TODO]
+    assert [named(t).state for t in TITLES] == [State.DONE, State.TODO, State.TODO]
 
 
 def test_moving_a_task_into_a_project(tickets):

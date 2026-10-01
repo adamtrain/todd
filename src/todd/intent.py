@@ -201,6 +201,9 @@ title, like "Finish #12 Ship the Torii webhook".
 
 - Use only the commands and options in <commands>, and only task numbers from <tasks>. Never \
 make up a task number, an option or a value.
+- Numbers are reused: when something is finished or dropped, the tasks after it move down to \
+fill the gap. That only happens once your whole plan has run, so in every step use the numbers \
+exactly as <tasks> shows them now.
 - Something new to keep track of (a task, a chain of work, something to follow) is `add`, with \
 the person's own words and links exactly as they gave them, as separate argv words where the \
 links stand alone. todd will file it and show it to them.

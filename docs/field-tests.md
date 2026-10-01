@@ -186,6 +186,24 @@ Try each with real links, and note anything Claude gets wrong.
       then drops its open tasks; `todd reopen <project>` brings them back.
 - [ ] A single task is still a single task: Claude doesn't invent tasks of its own.
 
+## 9a. Numbers
+
+Your existing database works as it is: the first command you run tidies the numbers and says
+what moved.
+
+- [ ] `todd ls` right after upgrading: if there were gaps, it says "Renumbered: …" first, then
+      lists everything numbered from 1.
+- [ ] `todd done <n>` on something in the middle of the list: the tasks after it move down by
+      one, the line under it says so, and the finished task is the first number after your
+      open ones (`todd ls --all`).
+- [ ] `todd reopen <that number>` brings it back without moving anything else.
+- [ ] `todd add "…"` gives the new task the first number after the open ones, with no
+      "Renumbered" line.
+- [ ] `todd "finish <this> and start <that>"`: both steps hit the right tasks, and the
+      "Renumbered" line comes once, at the end.
+- [ ] Does the renumbering ever surprise you (say, typing two commands from one listing)? If
+      so, tell me: it could wait until the next time you list things instead.
+
 ## 10. Moving, links and Jira failures
 
 - [ ] `todd move <n> <state>` works from any state to any other (except out of following,

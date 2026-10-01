@@ -4,7 +4,7 @@ from todd import pull
 from todd.models import Link, LinkKind, Reviewer, ReviewState, State
 
 from .conftest import SLACK_DM, answer
-from .test_cli import saved, todd
+from .test_cli import named, saved, todd
 
 
 def proposal(**changes) -> dict:
@@ -161,5 +161,5 @@ def test_pulling_a_project_pulls_its_tasks(shell, picks):
     shell.answers.append(proposal(reason="One's ticket is Done"))
     out = todd("pull", "1").output
     assert "#1 Ship it" in out and "#2 One" in out and "#3 Two" in out
-    assert saved(2).state == State.DONE
+    assert named("One").state == State.DONE
     assert "Unblocked: #3 Two" in out

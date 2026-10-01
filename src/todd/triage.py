@@ -920,7 +920,9 @@ def _create_tasks(
             if number == i and (link_id := links[index - 1].id) is not None
         ]
         store.move_links(conn, mine, task.id)
-        store.log(conn, task.id, EntryKind.TRIAGE, f"Filed by Claude as task {i} of #{project.id}")
+        store.log(
+            conn, task.id, EntryKind.TRIAGE, f"Filed by Claude as task {i} of “{filing.title}”"
+        )
         created.append(task.id)
     for i, item in enumerate(filing.tasks, 1):
         for n in item.after:

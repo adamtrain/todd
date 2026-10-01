@@ -5,11 +5,14 @@ from todd.models import State
 from todd.people import Nicknames
 
 from .conftest import SLACK_DM, answer
-from .test_cli import saved, todd
+from .test_cli import named, saved, todd
 
 
 def plan(*steps: tuple[list[str], str], question: str | None = None) -> dict:
     return {"steps": [{"argv": argv, "says": says} for argv, says in steps], "question": question}
+
+
+WEBHOOK, RUNBOOK = "Ship the Torii webhook", "Write the Torii runbook"
 
 
 def two_tasks(shell) -> None:
@@ -38,7 +41,10 @@ def test_saying_it_runs_the_commands_claude_works_out(shell, picks):
     assert picks.asked[-1][:2] == ("Do it?", ["do", "change", "cancel"])
     assert picks.asked[-1][2] == "do"  # the highlight starts on Do it
     assert "▶ 1/2 Finish #1" in out and "▶ 2/2 Start #2" in out
-    assert (saved(1).state, saved(2).state) == (State.DONE, State.DOING)
+    assert (named(WEBHOOK).state, named(RUNBOOK).state) == (State.DONE, State.DOING)
+    # The plan's steps use the numbers as they were; numbers only settle once it has run.
+    assert out.index("#2 to do → doing") < out.index("Renumbered: #1 is now #2 · #2 is now #1")
+    assert (named(WEBHOOK).id, named(RUNBOOK).id) == (2, 1)
 
     request = shell.prompts[-1]
     assert (
@@ -94,7 +100,7 @@ def test_changing_the_plan(shell, picks):
     todd("finish the webhook", input="actually drop it, we're not shipping it\n")
     assert "<previous_plan>" in shell.prompts[-1]
     assert "<change>actually drop it, we're not shipping it</change>" in shell.prompts[-1]
-    assert saved(1).state == State.DROPPED
+    assert named(WEBHOOK).state == State.DROPPED
 
 
 def test_cancel_does_nothing(shell, picks):
@@ -114,7 +120,7 @@ def test_a_plan_that_does_not_parse_goes_back_once(shell, picks):
     todd("finish the webhook")
     assert "Some of those command lines don't work in todd:" in shell.prompts[-1]
     assert "not a valid int" in shell.prompts[-1]
-    assert saved(1).state == State.DONE
+    assert named(WEBHOOK).state == State.DONE
 
 
 def test_a_plan_that_still_does_not_parse_does_nothing(shell, picks):
@@ -134,7 +140,7 @@ def test_without_a_terminal_changes_need_yes(shell):
     assert saved(1).state == State.TODO
     shell.answers.append(plan((["done", "1", "-J"], "Finish #1")))
     todd("do", "-y", "finish the webhook")
-    assert saved(1).state == State.DONE
+    assert named(WEBHOOK).state == State.DONE
 
 
 def test_a_failing_step_stops_the_rest(shell, picks):
@@ -239,6 +245,6 @@ def test_context_gives_projects_their_derived_state_and_marks_blocked_tasks(shel
     assert "#1 [project · waiting] Torii · tasks in order: #2 (waiting), #3 (blocked)" in text
     assert "#3 [blocked] Document it · in project #1 “Torii”" in text
     todd("done", "2", "-J")
-    todd("done", "3", "-J")
+    todd("done", "2", "-J")  # "Document it" moved down to #2
     text = intent.context(db.connect(db.db_path()), TODAY, Nicknames())
     assert "[project" not in text  # a finished project isn't something to move

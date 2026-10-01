@@ -26,6 +26,13 @@ def saved(task_id: int = 1):
     return store.get(db.connect(db.db_path()), task_id)
 
 
+def named(title: str):
+    """The saved task with this title, whatever its number is now."""
+    conn = db.connect(db.db_path())
+    found = next(t.id for t in store.tasks(conn) if t.title == title and t.id is not None)
+    return store.get(conn, found)
+
+
 @pytest.fixture
 def filed(shell):
     """One task, captured and filed: a Slack ask plus its Jira ticket."""

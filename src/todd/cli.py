@@ -6,7 +6,7 @@ import os
 import sqlite3
 import stat
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, TextIO
@@ -97,6 +97,8 @@ class Session:
     _config: Config | None = None
     _conn: sqlite3.Connection | None = None
     _names: Nicknames | None = None
+    # The numbers in use when this command last looked.
+    numbers: store.Numbers = field(default_factory=store.Numbers)
 
     @property
     def names(self) -> Nicknames:
@@ -115,13 +117,74 @@ class Session:
     def conn(self) -> sqlite3.Connection:
         if self._conn is None:
             self._conn = db.connect(self.db_path)
+            self.numbers = store.numbers(self._conn)
         return self._conn
+
+    @property
+    def opened(self) -> bool:
+        """Whether this command has used the database (and so may have changed it)."""
+        return self._conn is not None
 
 
 def _session(ctx: typer.Context) -> Session:
     session = ctx.find_root().obj
     assert isinstance(session, Session)
     return session
+
+
+class _Plan:
+    """A plan's steps were written with the numbers as they were, so while there are steps
+    still to come (`waiting`), numbers stay put. They settle during the last step, which
+    reports against the numbers the plan `began` with."""
+
+    waiting = False
+    began: store.Numbers | None = None
+
+
+def _settle(session: Session, *, final: bool = False) -> store.Renumbered:
+    """Bring numbers back down after things were closed or added, and say what moved.
+
+    Open things are numbered from 1 with no gaps, so finishing or dropping one frees its
+    number for those after it. A command settles when it ends (`final`), which is also when
+    numbers it showed for anything new get reported; `add` settles sooner, so that what it
+    shows is already final.
+    """
+    if _Plan.waiting or not session.opened:
+        return store.Renumbered()
+    before, began = session.numbers, _Plan.began or store.Numbers()
+    try:
+        moved = store.renumber(session.conn)
+    except (ToddError, sqlite3.Error) as e:
+        render.warn(err, f"Couldn't renumber things: {e}")
+        return store.Renumbered()
+    session.numbers, _Plan.began = moved.now, None
+
+    def worth_saying(
+        changes: dict[int, int], known: frozenset[int], was: frozenset[int], now: frozenset[int]
+    ) -> dict[int, int]:
+        # Things that are open, or were until this command closed them. Closed things
+        # shuffling along behind aren't news, and nor is a number nobody was shown.
+        return {
+            old: new
+            for old, new in changes.items()
+            if (old in was or new in now) and (old in known or final)
+        }
+
+    tasks = worth_saying(
+        moved.tasks,
+        before.tasks | began.tasks,
+        before.open_tasks | began.open_tasks,
+        moved.now.open_tasks,
+    )
+    followups = worth_saying(
+        moved.followups,
+        before.followups | began.followups,
+        before.open_followups | began.open_followups,
+        moved.now.open_followups,
+    )
+    if (notice := render.renumbered(tasks, followups)) is not None:
+        err.print(notice)
+    return moved
 
 
 def _interactive() -> bool:
@@ -222,9 +285,10 @@ def main_callback(
     Say what you want in your own words, [bold]todd "…"[/], and Claude works out the commands
     below (you see the plan first). With nothing at all, shows what you can act on now.
     """
-    ctx.obj = Session(db.db_path(db_file), db.config_path(config_file))
+    session = ctx.obj = Session(db.db_path(db_file), db.config_path(config_file))
+    ctx.call_on_close(lambda: _settle(session, final=True))
     if ctx.invoked_subcommand is None:
-        _now(ctx.obj)
+        _now(session)
 
 
 def _projects(conn: sqlite3.Connection, *, closed: bool = False) -> list[tuple[Task, list[Task]]]:
@@ -255,6 +319,7 @@ def _now(session: Session, *, area: str | None = None, person: str | None = None
     """What you can act on now: doing, to do and not blocked, or not filed yet."""
     try:
         conn = session.conn
+        _settle(session)
         tasks = _matching(session, [s for s in State if not s.closed], area, person)
         free = [t for t in tasks if not t.blocked]
         counts = {
@@ -341,6 +406,7 @@ def list_tasks(
     session = _session(ctx)
     try:
         conn = session.conn
+        _settle(session)
         states = None if everything else [s for s in State if not s.closed]
         wanted = {t.id: t for t in _matching(session, states, area, person)}
         sections = []
@@ -519,11 +585,13 @@ def _file(
             changes.append(change)
             filing = ask_claude("making your changes", previous=filing, changes=changes)
     applied = triage.apply(conn, task, filing, links, as_project=as_project)
+    moved = _settle(session)  # a project's new tasks, and Claude's follow-ups, get their numbers
+    filed_id = moved.task(task.id)
     if _interactive():
-        for task_id in [task.id, *applied.tasks]:
+        for task_id in [filed_id, *(moved.task(n) for n in applied.tasks)]:
             if (each := store.get(conn, task_id)).needs_title:
                 _ask_for_title(session, each)
-    return store.get(conn, task.id)
+    return store.get(conn, filed_id)
 
 
 def _print_filed(session: Session, filed: Task) -> None:
@@ -712,7 +780,8 @@ def add(
         with db.tx(conn):
             for blocker in waits_on:
                 store.add_blocker(conn, task.id, blocker)
-        task = store.get(conn, task.id)
+        # A new task takes the first number after the open ones, before anything shows it.
+        task = store.get(conn, _settle(session).task(task.id))
         err.print(render.capture_line(capture, origin, render.width(err)))
         if raw:
             render.success(
@@ -1711,7 +1780,9 @@ def projects(
     """Your projects, each with its tasks in order (finished ones too) and what blocks what."""
     session = _session(ctx)
     try:
-        items = _projects(session.conn, closed=everything)
+        conn = session.conn
+        _settle(session)
+        items = _projects(conn, closed=everything)
     except ToddError as e:
         raise _fail(e) from e
     render.projects(out, items, today=_today(), names=session.names)
@@ -1738,7 +1809,7 @@ def block(
             for blocker in blockers:
                 assert blocker.id is not None
                 store.add_blocker(conn, task_id, blocker.id)
-                store.log(conn, task_id, EntryKind.NOTE, f"Waits on #{blocker.id}")
+                store.log(conn, task_id, EntryKind.NOTE, f"Waits on “{blocker.title}”")
     except ToddError as e:
         raise _fail(e) from e
     names = ", ".join(f"#{b.id} {b.title}" for b in blockers)
@@ -1758,10 +1829,11 @@ def unblock(
     try:
         conn = _session(ctx).conn
         store.get(conn, task_id)
+        other = store.get(conn, on) if on is not None else None
         with db.tx(conn):
             removed = store.remove_blockers(conn, task_id, on)
             if removed:
-                what = f"#{on}" if on is not None else "anything"
+                what = f"“{other.title}”" if other is not None else "anything"
                 store.log(conn, task_id, EntryKind.NOTE, f"No longer waits on {what}")
     except ToddError as e:
         raise _fail(e) from e
@@ -1779,7 +1851,9 @@ def following(ctx: typer.Context) -> None:
     """What you're keeping an eye on, soonest check-in first."""
     session = _session(ctx)
     try:
-        tasks = store.tasks(session.conn, [State.FOLLOWING], projects=False)
+        conn = session.conn
+        _settle(session)
+        tasks = store.tasks(conn, [State.FOLLOWING], projects=False)
     except ToddError as e:
         raise _fail(e) from e
     render.following(out, tasks, today=_today(), now=store.now(), names=session.names)
@@ -2034,8 +2108,10 @@ def followups_list(ctx: typer.Context) -> None:
     """Every open follow-up: what's due, what's coming, and what waits on a task's state."""
     if ctx.invoked_subcommand is not None:
         return
+    session = _session(ctx)
     try:
-        conn = _session(ctx).conn
+        conn = session.conn
+        _settle(session)
         items = _with_tasks(conn, store.open_followups(conn))
     except ToddError as e:
         raise _fail(e) from e
@@ -2085,7 +2161,9 @@ def followup_add(
             unless=states.get("--unless"),
             by_you=True,
         )
-        store.add_followup(session.conn, task_id, followup)
+        conn = session.conn
+        added = store.add_followup(conn, task_id, followup)
+        followup = store.get_followup(conn, _settle(session).followup(added))
     except ToddError as e:
         raise _fail(e) from e
     render.success(err, render.followup_line(followup, _today()))
@@ -2119,9 +2197,11 @@ def followup_snooze(
 ) -> None:
     """Move a follow-up to another day (a check-in you'll do again later, say)."""
     try:
-        conn = _session(ctx).conn
+        session = _session(ctx)
+        conn = session.conn
         store.reschedule_followup(conn, followup_id, parse_due(on, _today()))
-        followup = store.get_followup(conn, followup_id)
+        # Snoozing one that was closed opens it again, which gives it an open number.
+        followup = store.get_followup(conn, _settle(session).followup(followup_id))
     except ToddError as e:
         raise _fail(e) from e
     render.success(err, render.followup_line(followup, _today()))
@@ -2225,9 +2305,13 @@ def command_group() -> TyperGroup:
 def _run_plan(session: Session, group: TyperGroup, steps: list[intent.Step]) -> None:
     """Run each step through the ordinary command, stopping at the first that doesn't finish."""
     base = ["--db", str(session.db_path), "--config", str(session.config_path)]
+    _Plan.began = session.numbers
     for i, step in enumerate(steps, 1):
         if len(steps) > 1:
             err.print(Text.assemble((f"▶ {i}/{len(steps)} ", render.ACCENT), (step.says, "bold")))
+        # The steps name tasks by the numbers they had when the plan was made, so nothing is
+        # renumbered while there are steps to come. The last one settles as it would alone.
+        _Plan.waiting = i < len(steps)
         try:
             code = group.main(args=[*base, *step.argv], prog_name="todd", standalone_mode=False)
         except typer.Abort:
@@ -2235,6 +2319,8 @@ def _run_plan(session: Session, group: TyperGroup, steps: list[intent.Step]) -> 
         except typer.TyperException as e:
             render.error(err, intent.message(e))
             code = 1
+        finally:
+            _Plan.waiting = False
         if isinstance(code, int) and code != 0:
             if i < len(steps):
                 render.warn(

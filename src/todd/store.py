@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -462,6 +463,154 @@ def move(
             task_id,
         ),
     )
+
+
+# ── Numbers ──────────────────────────────────────────────────────────────────
+#
+# A task's number is its id, and numbers are kept as low as they can be: what's open is
+# numbered 1, 2, 3… in the order it already had, and what's finished or dropped comes after,
+# most recently closed first. So closing something frees its number for the ones after it,
+# and the thing you just closed is the first number after your open ones. Follow-ups are
+# numbered the same way.
+
+# Every column that holds a task's number.
+_TASK_NUMBERS = (
+    ("task", "id"),
+    ("task", "project_id"),
+    ("blocker", "task_id"),
+    ("blocker", "blocked_by"),
+    ("link", "task_id"),
+    ("person", "task_id"),
+    ("entry", "task_id"),
+    ("followup", "task_id"),
+)
+_CLOSED = (State.DONE.value, State.DROPPED.value)
+
+
+@dataclass(frozen=True, slots=True)
+class Numbers:
+    """The numbers in use: which exist, and which of those are open."""
+
+    tasks: frozenset[int] = frozenset()
+    open_tasks: frozenset[int] = frozenset()
+    followups: frozenset[int] = frozenset()
+    open_followups: frozenset[int] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class Renumbered:
+    """What `renumber` changed, old number to new, and the numbers as they are now."""
+
+    tasks: dict[int, int] = field(default_factory=dict)
+    followups: dict[int, int] = field(default_factory=dict)
+    now: Numbers = Numbers()
+
+    def task(self, number: int) -> int:
+        """What a task's number is now."""
+        return self.tasks.get(number, number)
+
+    def followup(self, number: int) -> int:
+        return self.followups.get(number, number)
+
+
+def _seconds(text: str | None) -> float:
+    moment = _moment(text)
+    return moment.timestamp() if moment else 0.0
+
+
+def _task_order(conn: sqlite3.Connection) -> tuple[list[int], list[int]]:
+    """Task numbers as they should be ordered: the open ones, then the closed ones.
+
+    A project is closed when it was dropped, or when every one of its tasks is closed; it
+    closed when the last of them did.
+    """
+    rows = conn.execute(
+        "SELECT id, state, state_at, is_project, project_id FROM task ORDER BY id"
+    ).fetchall()
+    # Timestamps are to the second, so the timeline settles which of two came later.
+    last_move = dict(
+        conn.execute("SELECT task_id, max(id) FROM entry WHERE kind = 'state' GROUP BY task_id")
+    )
+    tasks_of: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        if row["project_id"] is not None:
+            tasks_of.setdefault(row["project_id"], []).append(row)
+
+    def closed_at(row: sqlite3.Row) -> tuple[float, int]:
+        return _seconds(row["state_at"]), last_move.get(row["id"], 0)
+
+    still_open: list[int] = []
+    closed: list[tuple[float, int, int]] = []
+    for row in rows:
+        when: tuple[float, int] | None = closed_at(row) if row["state"] in _CLOSED else None
+        tasks = tasks_of.get(row["id"], []) if row["is_project"] else []
+        if tasks and all(t["state"] in _CLOSED for t in tasks):
+            when = max([closed_at(t) for t in tasks] + ([when] if when else []))
+        if when is None:
+            still_open.append(row["id"])
+        else:
+            closed.append((-when[0], -when[1], row["id"]))
+    return still_open, [task_id for *_, task_id in sorted(closed)]
+
+
+def _followup_order(conn: sqlite3.Connection) -> tuple[list[int], list[int]]:
+    rows = conn.execute("SELECT id, status, closed_at FROM followup ORDER BY id").fetchall()
+    still_open = [r["id"] for r in rows if r["status"] == FollowupStatus.OPEN.value]
+    closed = sorted(
+        (-_seconds(r["closed_at"]), r["id"])
+        for r in rows
+        if r["status"] != FollowupStatus.OPEN.value
+    )
+    return still_open, [followup_id for _, followup_id in closed]
+
+
+def numbers(conn: sqlite3.Connection) -> Numbers:
+    tasks, closed_tasks = _task_order(conn)
+    followups, closed_followups = _followup_order(conn)
+    return Numbers(
+        frozenset(tasks) | frozenset(closed_tasks),
+        frozenset(tasks),
+        frozenset(followups) | frozenset(closed_followups),
+        frozenset(followups),
+    )
+
+
+def _renumber(
+    conn: sqlite3.Connection, order: list[int], columns: Sequence[tuple[str, str]]
+) -> dict[int, int]:
+    """Number the things in `order` 1, 2, 3…, everywhere `columns` hold their numbers (inside
+    the caller's transaction). Returns the ones that changed, old number to new."""
+    changes = {old: new for new, old in enumerate(order, 1) if old != new}
+    if not changes:
+        return {}
+    conn.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS renumbering (old INTEGER PRIMARY KEY, new INTEGER)"
+    )
+    conn.execute("DELETE FROM renumbering")
+    conn.executemany("INSERT INTO renumbering (old, new) VALUES (?, ?)", changes.items())
+    # Through negative numbers first, so that no two rows ever share one on the way.
+    for table, column in columns:
+        conn.execute(
+            f"UPDATE {table} SET {column} = "
+            f"-(SELECT new FROM renumbering WHERE old = {table}.{column}) "
+            f"WHERE {column} IN (SELECT old FROM renumbering)"
+        )
+    for table, column in columns:
+        conn.execute(f"UPDATE {table} SET {column} = -{column} WHERE {column} < 0")
+    return changes
+
+
+def renumber(conn: sqlite3.Connection) -> Renumbered:
+    """Give tasks and follow-ups the lowest numbers there are: open ones first, in the order
+    they have, then closed ones, most recently closed first."""
+    tasks, closed_tasks = _task_order(conn)
+    followups, closed_followups = _followup_order(conn)
+    with tx(conn):
+        # Rows point at each other by number; they only need to agree again by the end.
+        conn.execute("PRAGMA defer_foreign_keys = ON")
+        moved = _renumber(conn, tasks + closed_tasks, _TASK_NUMBERS)
+        moved_followups = _renumber(conn, followups + closed_followups, (("followup", "id"),))
+    return Renumbered(moved, moved_followups, numbers(conn))
 
 
 def insert_task(conn: sqlite3.Connection, task: Task) -> int:

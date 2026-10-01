@@ -43,6 +43,15 @@ FOLLOWING = (
     "only take it on (to do), mark it done (it's over), or drop it (stop following)."
 )
 
+NUMBERS = (
+    "Numbers are kept as low as they can be. Open things are numbered from 1 with no gaps, so "
+    "when you finish or drop something, the ones after it move down to fill its place, and todd "
+    "says what moved. What's finished or dropped keeps a number after the open ones, most "
+    "recently closed first, so the thing you just closed is the first number after your open "
+    "ones (`todd ls --all` shows them; `todd reopen 9` brings one back). Follow-ups (↪) are "
+    "numbered the same way."
+)
+
 ROLES: list[tuple[Role, str]] = [
     (Role.RESPOND, "where you'll reply or report back"),
     (Role.SOURCE, "where the ask came from"),
@@ -64,4 +73,5 @@ def as_text() -> str:
     lines += [f"- {state.value} ({state.label}): {meaning}" for state, meaning in STATES]
     lines += [f"Blocked: {BLOCKED}", f"Projects: {PROJECTS}", f"Following: {FOLLOWING}"]
     lines.append(f"Follow-ups: {FOLLOW_UPS}")
+    lines.append(f"Numbers: {NUMBERS}")
     return "\n".join(lines)

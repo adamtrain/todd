@@ -198,6 +198,27 @@ you're **following** isn't yours to move along: it's always a task of its own, o
 project, and from there it can only become to do (`todd reopen 12`, when it lands on you), done
 or dropped.
 
+### Numbers
+
+Numbers are reused, so they stay small. Open things are numbered from 1 with no gaps. When you
+finish or drop something, the ones after it move down to fill its place, and todd says what
+moved:
+
+```text
+✓ #2 doing → done  Write the RFC
+  Renumbered: #2 is now #5 · #3 to #5 are now #2 to #4
+```
+
+What's finished or dropped keeps a number after the open ones, most recently closed first. So
+the thing you just closed is the first number after your open ones, and reopening it right away
+(`todd reopen 5`) changes nothing else. `todd ls --all` shows the closed ones with their numbers.
+A new task takes the first number after the open ones. Follow-ups (↪) are numbered the same way.
+
+Numbers only change at the end of a command, so a command never trips over itself. The same
+goes for a request in your own words: every step of the plan uses the numbers as they were when
+you asked, and they settle once it has run. In a script, though, a number is only good until
+the next command that finishes or drops something.
+
 ### Changing Jira
 
 Every time a state change would move a ticket, todd shows the move and asks about it:

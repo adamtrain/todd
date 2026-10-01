@@ -601,6 +601,7 @@ def glossary(console: Console) -> None:
         ("Projects", words.PROJECTS, PROJECT),
         ("Following", words.FOLLOWING, STATE_COLORS[State.FOLLOWING]),
         ("Follow-ups", words.FOLLOW_UPS, FOLLOWUP),
+        ("Numbers", words.NUMBERS, FAINT),
     ):
         console.print()
         console.print(section(title, w, color), width=w)
@@ -1152,6 +1153,37 @@ def plan(console: Console, steps: list[Any]) -> None:
     console.print(section("todd will", w, ACCENT), width=w)
     console.print(table, width=w)
     console.print()
+
+
+# ── Numbers ──────────────────────────────────────────────────────────────────
+
+
+def _moves(changes: dict[int, int], mark: str) -> list[str]:
+    """Number changes in a few words, runs together: "#4 to #6 are now #3 to #5"."""
+    runs: list[list[tuple[int, int]]] = []
+    for old, new in sorted(changes.items()):
+        if runs and runs[-1][-1] == (old - 1, new - 1):
+            runs[-1].append((old, new))
+        else:
+            runs.append([(old, new)])
+    said = []
+    for run in runs:
+        (first, to_first), (last, to_last) = run[0], run[-1]
+        if len(run) == 1:
+            said.append(f"{mark}{first} is now {mark}{to_first}")
+        else:
+            said.append(
+                f"{mark}{first} to {mark}{last} are now {mark}{to_first} to {mark}{to_last}"
+            )
+    return said
+
+
+def renumbered(tasks: dict[int, int], followups: dict[int, int]) -> Text | None:
+    """What moved when numbers were brought back down, or None if nothing worth saying did."""
+    parts = [*_moves(tasks, "#"), *_moves(followups, "↪")]
+    if not parts:
+        return None
+    return Text("  Renumbered: " + " · ".join(parts), style=FAINT)
 
 
 # ── Capturing ────────────────────────────────────────────────────────────────
