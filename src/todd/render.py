@@ -9,10 +9,12 @@ from datetime import date, datetime
 from typing import Any
 
 from rich import box
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.segment import Segment
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -497,62 +499,100 @@ def _elsewhere(counts: dict[str, int], done_this_week: int) -> Text:
     return footer
 
 
-def now_view(
-    console: Console,
-    tasks: list[Task],
-    *,
-    today: date,
-    now: datetime,
-    due: list[tuple[Followup, Task]] | None = None,
-    counts: dict[str, int] | None = None,
-    done_this_week: int = 0,
-    names: Nicknames = NO_NAMES,
-) -> None:
-    """What you can act on now: follow-ups that are due, what you're doing, what's next (and
-    not blocked), and anything not filed yet. Each task says which project it's part of."""
-    w = width(console)
-    columns = Columns.fitting(tasks, today, now)
+@dataclass(slots=True)
+class Now:
+    """Everything `todd now` shows, as it was at one moment."""
+
+    tasks: list[Task]  # what can be acted on
+    today: date
+    now: datetime
+    due: list[tuple[Followup, Task]] = field(default_factory=list)  # follow-ups that are due
+    counts: dict[str, int] = field(default_factory=dict)  # what's open but not actionable
+    done_this_week: int = 0
+    names: Nicknames = NO_NAMES
+
+
+def now_parts(view: Now, w: int) -> list[RenderableType]:
+    """What you can act on now, `w` wide: follow-ups that are due, what you're doing, what's
+    next (and neither blocked nor deferred), and anything not filed yet. Each task says which
+    project it's part of."""
+    today, tasks = view.today, view.tasks
+    columns = Columns.fitting(tasks, today, view.now)
     groups = {
         state: sorted((t for t in tasks if t.state == state), key=_sort_key) for state in NOW_ORDER
     }
-    console.print()
-    if due:
-        console.print(
-            Text.assemble(
-                ("↪ ", FOLLOWUP), ("Follow-ups due", f"bold {FOLLOWUP}"), (f" {len(due)}", FAINT)
-            )
+    blank = Text("")
+    parts: list[RenderableType] = [blank]
+    if view.due:
+        head = Text.assemble(
+            ("↪ ", FOLLOWUP), ("Follow-ups due", f"bold {FOLLOWUP}"), (f" {len(view.due)}", FAINT)
         )
-        console.print(_due_followups(due, today, w))
-        console.print()
-    if not any(groups.values()) and not due:
-        console.print(Text("Nothing to act on right now.", style="bold"))
-        console.print(
+        parts += [head, _due_followups(view.due, today, w), blank]
+    if not any(groups.values()) and not view.due:
+        parts += [
+            Text("Nothing to act on right now.", style="bold"),
             Text.assemble(
                 ("Add something: ", FAINT),
                 ('todd "remind me to reply to Priya about the migration"', f"bold {ACCENT}"),
-            )
-        )
-        console.print()
+            ),
+            blank,
+        ]
     for state, group in groups.items():
         if not group:
             continue
         color = STATE_COLORS[state]
-        console.print(
-            Text.assemble(
-                ("● ", color),
-                (state.label.capitalize(), f"bold {color}"),
-                (f" {len(group)}", FAINT),
-            )
+        head = Text.assemble(
+            ("● ", color), (state.label.capitalize(), f"bold {color}"), (f" {len(group)}", FAINT)
         )
         table = task_table(
-            group, today=today, now=now, w=w, names=names, project_names=True, columns=columns
+            group,
+            today=today,
+            now=view.now,
+            w=w,
+            names=view.names,
+            project_names=True,
+            columns=columns,
         )
-        console.print(table)
-        console.print()
-    footer = _elsewhere(counts or {}, done_this_week)
+        parts += [head, table, blank]
+    footer = _elsewhere(view.counts, view.done_this_week)
     if footer.plain:
-        console.print(footer)
-        console.print()
+        parts += [footer, blank]
+    return parts
+
+
+def now_view(console: Console, view: Now) -> None:
+    for part in now_parts(view, width(console)):
+        console.print(part)
+
+
+@dataclass(slots=True)
+class Watching:
+    """The `todd now` view kept on screen by `todd watch`. It lays itself out for whatever
+    size the terminal is when it's drawn, and says so when there's more than fits."""
+
+    view: Now
+    changed: datetime  # when what's shown last changed
+    about: str = ""  # the filters in force, if any
+    fit: bool = False  # it has the screen to itself: show what fits, and say if more doesn't
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        head = Text.assemble(
+            ("todd watch", f"bold {ACCENT}"),
+            (f" · {self.about}" if self.about else "", FAINT),
+            (f" · updated {self.changed:%H:%M:%S} · Ctrl-C to stop", FAINT),
+        )
+        everything = Group(head, *now_parts(self.view, options.max_width))
+        lines = console.render_lines(everything, options.update(height=None), pad=False)
+        while lines and not any(segment.text.strip() for segment in lines[-1]):
+            lines.pop()  # blank lines at the end only cost room
+        room = options.max_height
+        if self.fit and len(lines) > room:
+            hidden = len(lines) - room + 1
+            more = f"… {plural(hidden, 'more line')}: make this window taller, or see todd ls"
+            lines = [*lines[: room - 1], [Segment(more, Style.parse(WARN))]]
+        for line in lines:
+            yield from line
+            yield Segment.line()
 
 
 def overview(

@@ -223,6 +223,17 @@ Your database is upgraded in place the first time you run this version; nothing 
 - [ ] `todd "put the <task> off until next month"` becomes a defer.
 - [ ] Deadlines in `todd` and `todd ls` now read "due Fri", "due tomorrow", "overdue 2d".
 
+## 9c. Watching
+
+- [ ] `todd watch` in one terminal, then in another: add a task, start one, finish one, defer
+      one. Each change shows up within a second or so, redrawn in place, with "updated HH:MM:SS"
+      moving on.
+- [ ] Resize the watching window: it lays itself out again. Make it very short: the last line
+      says how many more lines there are.
+- [ ] Ctrl-C leaves cleanly and gives the terminal back as it was.
+- [ ] Does it work in your usual setup (tmux pane, split window, the terminal you'd really
+      leave it in)? Any flicker?
+
 ## 10. Moving, links and Jira failures
 
 - [ ] `todd move <n> <state>` works from any state to any other (except out of following,

@@ -27,8 +27,8 @@ from todd.render import plural
 # Commands that only look at things: a plan made of these runs without asking.
 LOOKING = {"now", "ls", "show", "projects", "following", "links", "states", "doctor"}
 
-# Commands Claude mustn't plan: this one (no plans inside plans).
-NOT_PLANNABLE = {"do"}
+# Commands Claude mustn't plan: this one (no plans inside plans), and one that never ends.
+NOT_PLANNABLE = {"do", "watch"}
 
 
 # ── What todd can do ─────────────────────────────────────────────────────────

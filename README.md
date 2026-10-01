@@ -141,6 +141,7 @@ Or use the commands directly:
 
 ```sh
 todd                                   # what you can act on now (same as: todd now)
+todd watch                             # the same, kept on screen and redrawn as things change
 todd ls                                # everything open, by project
 todd states                            # every state and what it means
 todd add "reply to Priya re: Q3 numbers" https://acme.slack.com/archives/D…/p… PLAT-412
@@ -185,6 +186,11 @@ or only followed is counted underneath, not listed.
 Not yours to act on now: 2 waiting · 1 in review · 4 blocked · 2 deferred · 1 following
 todd ls shows everything, by project
 ```
+
+`todd watch` keeps that view on screen and redraws it whenever anything changes. Leave it open
+in one terminal and work in another: tasks appear, move and leave as you add, start and finish
+them, and deferred ones come back on their day. `--area` and `--person` narrow it, and Ctrl-C
+stops it. It only looks; it never changes anything.
 
 `todd ls` is everything open: each project with its state and its tasks in order (blocked ones
 too, with what blocks them), then the tasks that aren't part of a project under **No project**.
@@ -246,8 +252,9 @@ A new task takes the first number after the open ones. Follow-ups (↪) are numb
 
 Numbers only change at the end of a command, so a command never trips over itself. The same
 goes for a request in your own words: every step of the plan uses the numbers as they were when
-you asked, and they settle once it has run. In a script, though, a number is only good until
-the next command that finishes or drops something.
+you asked, and they settle once it has run. While that request is under way, a todd in another
+terminal leaves the renumbering to it. In a script, though, a number is only good until the
+next command that finishes or drops something.
 
 ### Changing Jira
 
@@ -270,6 +277,7 @@ Other commands:
 | Command | What it does |
 | --- | --- |
 | `todd now [--area name] [--person name]` | What you can act on. Plain `todd` is the same. |
+| `todd watch [--area name] [--person name] [--every 1]` | Keep `todd now` on screen, redrawn when anything changes. |
 | `todd ls [--all] [--following] [--area name] [--person name]` | Everything open, by project. |
 | `todd states` | Every state and what it means, plus how projects, blocking, following and follow-ups work. |
 | `todd triage [id]` | File a task again (say, after adding links), or everything still in your inbox. |

@@ -6,6 +6,9 @@ import os
 import sqlite3
 import stat
 import sys
+import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -13,6 +16,7 @@ from typing import Annotated, TextIO
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.text import Text
@@ -99,6 +103,7 @@ class Session:
     _names: Nicknames | None = None
     # The numbers in use when this command last looked.
     numbers: store.Numbers = field(default_factory=store.Numbers)
+    looking: bool = False  # only here to look (todd watch): it never renumbers anything
 
     @property
     def names(self) -> Nicknames:
@@ -119,6 +124,10 @@ class Session:
             self._conn = db.connect(self.db_path)
             self.numbers = store.numbers(self._conn)
         return self._conn
+
+    def connect(self) -> sqlite3.Connection:
+        """Open the database now, if it isn't open yet."""
+        return self.conn
 
     @property
     def opened(self) -> bool:
@@ -149,7 +158,7 @@ def _settle(session: Session, *, final: bool = False) -> store.Renumbered:
     numbers it showed for anything new get reported; `add` settles sooner, so that what it
     shows is already final.
     """
-    if _Plan.waiting or not session.opened:
+    if _Plan.waiting or session.looking or not session.opened or _held_elsewhere(session):
         return store.Renumbered()
     before, began = session.numbers, _Plan.began or store.Numbers()
     try:
@@ -185,6 +194,51 @@ def _settle(session: Session, *, final: bool = False) -> store.Renumbered:
     if (notice := render.renumbered(tasks, followups)) is not None:
         err.print(notice)
     return moved
+
+
+# How long a request's hold on the numbers is believed, if its todd never let go.
+HOLD_SECONDS = 2 * 60 * 60
+
+
+def _hold_file(session: Session) -> Path:
+    return session.db_path.with_name(session.db_path.name + ".hold")
+
+
+@contextmanager
+def _holding_numbers(session: Session) -> Iterator[None]:
+    """While a request in your own words is being worked out and run, the numbers it was
+    given must stay put, whatever other terminals do. This tells them so: a todd elsewhere
+    leaves the renumbering to this one (see `_held_elsewhere`)."""
+    path = _hold_file(session)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(os.getpid()))
+    except OSError:
+        pass  # nowhere to say so: carry on without
+    try:
+        yield
+    finally:
+        with suppress(OSError):
+            path.unlink(missing_ok=True)
+
+
+def _held_elsewhere(session: Session) -> bool:
+    """Whether another todd, still running, has asked for the numbers to be left alone."""
+    path = _hold_file(session)
+    try:
+        pid = int(path.read_text().strip())
+        age = time.time() - path.stat().st_mtime
+    except (OSError, ValueError):
+        return False
+    if pid == os.getpid() or age > HOLD_SECONDS:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False  # that todd is gone, and left its note behind
+    except OSError:
+        return True
+    return True
 
 
 def _interactive() -> bool:
@@ -316,40 +370,90 @@ def _matching(
     return store.tasks(session.conn, states, area=area, person=who, projects=False)
 
 
-def _now(session: Session, *, area: str | None = None, person: str | None = None) -> None:
+def _now_view(session: Session, area: str | None, person: str | None) -> render.Now:
     """What you can act on now: doing, to do, or not filed yet, and neither blocked nor
-    deferred."""
-    try:
-        conn = session.conn
-        _settle(session)
-        tasks = _matching(session, [s for s in State if not s.closed], area, person)
-        today = _today()
-        unblocked = [t for t in tasks if not t.blocked]
-        free = [t for t in unblocked if not t.deferred(today)]
-        counts = {
-            "waiting": sum(t.state == State.WAITING for t in free),
-            "in review": sum(t.state == State.IN_REVIEW for t in free),
-            "blocked": len(tasks) - len(unblocked),
-            "deferred": len(unblocked) - len(free),
-            "following": sum(t.state == State.FOLLOWING for t in free),
-        }
-        local = datetime.now().astimezone()
-        monday = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0)
-        filtered = bool(area or person)
-        due = [] if filtered else _with_tasks(conn, store.open_followups(conn), due_only=True)
-        done = store.closed_since(conn, monday)
-    except ToddError as e:
-        raise _fail(e) from e
-    render.now_view(
-        out,
+    deferred; with counts of what's open but isn't."""
+    conn = session.conn
+    tasks = _matching(session, [s for s in State if not s.closed], area, person)
+    today = _today()
+    unblocked = [t for t in tasks if not t.blocked]
+    free = [t for t in unblocked if not t.deferred(today)]
+    counts = {
+        "waiting": sum(t.state == State.WAITING for t in free),
+        "in review": sum(t.state == State.IN_REVIEW for t in free),
+        "blocked": len(tasks) - len(unblocked),
+        "deferred": len(unblocked) - len(free),
+        "following": sum(t.state == State.FOLLOWING for t in free),
+    }
+    local = datetime.now().astimezone()
+    monday = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0)
+    filtered = bool(area or person)
+    return render.Now(
         [t for t in free if t.state in render.NOW_ORDER],
         today=today,
         now=store.now(),
-        due=due,
+        due=[] if filtered else _with_tasks(conn, store.open_followups(conn), due_only=True),
         counts=counts,
-        done_this_week=done,
+        done_this_week=store.closed_since(conn, monday),
         names=session.names,
     )
+
+
+def _now(session: Session, *, area: str | None = None, person: str | None = None) -> None:
+    try:
+        session.connect()
+        _settle(session)
+        view = _now_view(session, area, person)
+    except ToddError as e:
+        raise _fail(e) from e
+    render.now_view(out, view)
+
+
+def _clock() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _ticks(every: float) -> Iterator[None]:
+    """Wake up every so often, for ever: the heartbeat of `todd watch`."""
+    while True:
+        yield
+        time.sleep(every)
+
+
+def _watch_frames(
+    session: Session,
+    area: str | None,
+    person: str | None,
+    ticks: Iterable[None],
+    *,
+    fit: bool = False,
+) -> Iterator[render.Watching | None]:
+    """On each tick, the view afresh if anything could have changed it: the database (from
+    any terminal), or the clock reaching a new minute. Otherwise None."""
+    conn = session.conn
+    about = " · ".join(
+        f"{name} {value}" for name, value in (("area", area), ("person", person)) if value
+    )
+    seen: tuple[int, date, int] | None = None
+    frame: render.Watching | None = None
+    for _ in ticks:
+        try:
+            version = store.data_version(conn)
+            moment = _clock()
+            state = (version, _today(), moment.hour * 60 + moment.minute)
+            if state == seen:
+                yield None
+                continue
+            # The time shown is when the tasks last changed, not when the clock ticked over.
+            changed = (
+                moment if frame is None or seen is None or version != seen[0] else frame.changed
+            )
+            frame = render.Watching(_now_view(session, area, person), changed, about, fit)
+            seen = state
+        except (ToddError, sqlite3.Error):
+            yield None  # most likely another terminal is mid-write: look again next tick
+            continue
+        yield frame
 
 
 def _with_tasks(
@@ -390,6 +494,47 @@ def now(ctx: typer.Context, area: Area = None, person: Person = None) -> None:
     [bold]todd ls[/].
     """
     _now(_session(ctx), area=area, person=person)
+
+
+@app.command()
+def watch(
+    ctx: typer.Context,
+    area: Area = None,
+    person: Person = None,
+    every: Annotated[
+        float,
+        typer.Option("--every", help="How often to look for changes, in seconds.", min=0.1),
+    ] = 1.0,
+) -> None:
+    """Keep [bold]todd now[/] on screen, redrawn whenever anything changes.
+
+    Leave it open in one terminal and work in another: what you can act on stays up to date
+    as tasks are added, moved, finished or come back from being deferred. Ctrl-C stops it.
+    """
+    session = _session(ctx)
+    session.looking = True
+    try:
+        session.connect()  # before the screen is taken over, so trouble can be reported
+    except ToddError as e:
+        raise _fail(e) from e
+    frames = _watch_frames(session, area, person, _ticks(every), fit=out.is_terminal)
+    try:
+        if not out.is_terminal:
+            # Nothing to redraw in place on: write each new view out as it comes.
+            for frame in frames:
+                if frame is not None:
+                    out.print(frame)
+            return
+        with Live(console=out, screen=True, auto_refresh=False) as live:
+            size = out.size
+            for frame in frames:
+                if frame is not None:
+                    live.update(frame, refresh=True)
+                elif out.size != size:
+                    live.refresh()  # the window changed shape: lay it out again
+                size = out.size
+    except KeyboardInterrupt:
+        pass
 
 
 @app.command("ls")
@@ -2327,17 +2472,18 @@ def do(
     session = _session(ctx)
     group = command_group()
     conversation = intent.Conversation(" ".join(words).strip())
-    for _ in range(MAX_ROUNDS):
-        try:
-            plan = _agree_on_plan(session, group, conversation, yes=yes)
-        except ToddError as e:
-            raise _fail(e) from e
-        if plan is None:
-            return
-        _run_plan(session, group, plan.steps)
-        if not plan.then:
-            return
-        conversation = conversation.after(plan)
+    with _holding_numbers(session):
+        for _ in range(MAX_ROUNDS):
+            try:
+                plan = _agree_on_plan(session, group, conversation, yes=yes)
+            except ToddError as e:
+                raise _fail(e) from e
+            if plan is None:
+                return
+            _run_plan(session, group, plan.steps)
+            if not plan.then:
+                return
+            conversation = conversation.after(plan)
     render.warn(
         err,
         f"Stopped there: that's {MAX_ROUNDS} rounds of steps, and Claude still had more.",
@@ -2811,7 +2957,7 @@ def _doctor_pr(url: str, names: Nicknames) -> None:
 # commands under the same heading.)
 HELP_LAYOUT = {
     "Capture and edit": ["add", "link", "note", "edit", "role", "triage"],
-    "Look": ["now", "ls", "projects", "following", "show", "links", "open", "states"],
+    "Look": ["now", "watch", "ls", "projects", "following", "show", "links", "open", "states"],
     "Move": ["start", "wait", "review", "done", "follow", "defer", "drop", "reopen", "move"],
     "Blocking": ["block", "unblock"],
     "Jira, GitHub and Slack": ["reply", "push", "pull"],

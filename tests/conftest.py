@@ -177,8 +177,11 @@ class Picks:
 
     script: list[str] = field(default_factory=list)
     asked: list[tuple[str, list[str], str]] = field(default_factory=list)  # question, keys, default
+    on_ask: Any = None  # called each time something is asked, to look at things meanwhile
 
     def __call__(self, question, options, *, default=0, console=None, **_):
+        if self.on_ask is not None:
+            self.on_ask()
         keys = [o.key for o in options]
         self.asked.append((str(question), keys, keys[default]))
         picked = self.script.pop(0) if self.script else keys[default]

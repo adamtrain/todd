@@ -1,6 +1,7 @@
 """Numbers are reused: what's open is numbered from 1 with no gaps, and what's closed comes
 after, most recently closed first."""
 
+import os
 import sqlite3
 
 import pytest
@@ -258,3 +259,30 @@ def test_the_timeline_names_tasks_by_title_not_number(shell):
 def test_states_explains_numbers(shell):
     out = " ".join(todd("states").output.split())
     assert "Numbers" in out and "the ones after it move down to fill its place" in out
+
+
+def test_a_request_being_run_elsewhere_keeps_its_numbers(shell, monkeypatch):
+    """While another terminal's todd is partway through a request in your own words, its
+    numbers have to stay as they were, so this one leaves the renumbering to it."""
+    titles = five(shell)
+    hold = db.db_path().with_name(db.db_path().name + ".hold")
+    hold.write_text(str(os.getppid()))  # some other process that's still running
+    out = todd("done", "2", "--local").output
+    assert "Renumbered" not in out
+    assert numbers(*titles) == [1, 2, 3, 4, 5]
+
+    hold.write_text("999999999")  # a todd that has gone away without tidying up
+    assert "Renumbered: #3 to #5 are now #2 to #4" in todd("ls").output
+    assert numbers(*titles) == [1, 5, 2, 3, 4]
+
+
+def test_a_request_holds_the_numbers_only_while_it_runs(shell, picks):
+    five(shell)
+    hold = db.db_path().with_name(db.db_path().name + ".hold")
+    seen = []
+    shell.answers.append(plan((["done", "1", "--local"], "Finish #1 One")))
+    picks.on_ask = lambda: seen.append(hold.exists())
+    out = todd("finish one").output
+    assert seen == [True]  # held while you were deciding
+    assert not hold.exists()
+    assert "Renumbered: #1 is now #5" in out  # its own todd still tidies

@@ -62,6 +62,11 @@ LINK_FIELDS = frozenset(
 )
 
 
+def data_version(conn: sqlite3.Connection) -> int:
+    """A number that changes whenever another connection changes the database."""
+    return int(conn.execute("PRAGMA data_version").fetchone()[0])
+
+
 def now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
