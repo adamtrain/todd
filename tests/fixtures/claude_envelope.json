@@ -15,7 +15,7 @@
     "follow_ups": [],
     "next_action": "Pull the Q3 numbers from the migration dashboard",
     "kind": "reply",
-    "project": "Platform",
+    "area": "Platform",
     "priority": "high",
     "due": "2026-10-01",
     "due_hint": "before Thursday's sync",
@@ -36,6 +36,7 @@
         "note": "the billing migration story",
         "author": null
       }
-    ]
+    ],
+    "tasks": []
   }
 }

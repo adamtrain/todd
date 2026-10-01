@@ -98,7 +98,7 @@ def test_stack_prompt_presents_the_stack_as_one_piece_of_work(shell):
         title="review priya's stack", links=[Link(LinkKind.GITHUB, PR_URL, ref="acme/billing#86")]
     )
     found = triage.gather(task.links, Config())
-    text = triage.prompt(task, found, projects={}, used=[], today=TODAY)
+    text = triage.prompt(task, found, areas={}, used=[], today=TODAY)
     assert '<stack repository="acme/billing" number="17">' in text
     assert (
         "A stack of 3 pull requests onto main, open. Bottom to top: link 1 (#85, merged), "
@@ -167,7 +167,7 @@ def test_prompt_marks_pasted_text_as_that_slack_message(shell, conn):
     task = _captured(conn)
     found = triage.gather(task.links, Config())
     text = triage.prompt(
-        task, found, projects={"platform": "Infra and migrations"}, used=["hiring"], today=TODAY
+        task, found, areas={"platform": "Infra and migrations"}, used=["hiring"], today=TODAY
     )
     assert text.startswith("Today is Wednesday 2026-09-30.")
     assert "<capture>\nreply to Priya about the Q3 numbers\n</capture>" in text
@@ -179,17 +179,15 @@ def test_prompt_marks_pasted_text_as_that_slack_message(shell, conn):
     assert "Jira ticket PLAT-412" in text
     assert "Status: In Progress" in text
     assert "<details>\nMove the billing-worker deployment" in text
-    assert "- platform: Infra and migrations" in text
-    assert "Project names used before: hiring" in text
+    assert "Areas:\n- platform: Infra and migrations" in text
+    assert "Area names used before: hiring" in text
 
 
 def test_prompt_says_when_a_slack_message_wasnt_pasted(shell):
     task = Task(title="x", links=[Link(LinkKind.SLACK, SLACK_DM)])
-    text = triage.prompt(
-        task, triage.gather(task.links, Config()), projects={}, used=[], today=TODAY
-    )
+    text = triage.prompt(task, triage.gather(task.links, Config()), areas={}, used=[], today=TODAY)
     assert "didn't paste this message" in text
-    assert "No projects yet." in text
+    assert "No areas yet." in text
 
 
 def test_system_prompt_treats_material_as_data():
@@ -207,7 +205,7 @@ def test_parse_a_good_answer():
     )
     assert filing.title == "Send Priya the Q3 migration numbers"
     assert filing.kind == Kind.REPLY
-    assert filing.project == "platform"  # lowercased
+    assert filing.area == "platform"  # lowercased
     assert filing.priority == Priority.HIGH
     assert filing.due == date(2026, 10, 1)
     assert filing.links[1].role == Role.RESPOND
@@ -240,8 +238,8 @@ def test_apply_files_the_task_and_moves_it_out_of_the_inbox(shell, conn):
     task = _captured(conn)
     found = triage.gather(task.links, Config())
     triage.save_lookups(conn, task.id, found)  # ty: ignore[invalid-argument-type]
-    filing = triage.ask(task, found, Config(), used_projects=[], today=TODAY)
-    assert triage.apply(conn, task, filing, [g.link for g in found]) == State.TODO
+    filing = triage.ask(task, found, Config(), used_areas=[], today=TODAY)
+    assert triage.apply(conn, task, filing, [g.link for g in found]).state == State.TODO
     saved = store.get(conn, task.id)  # ty: ignore[invalid-argument-type]
     assert saved.title == "Send Priya the Q3 migration numbers"
     assert saved.next_action == "Pull the Q3 numbers from the migration dashboard"
@@ -261,8 +259,8 @@ def test_a_capture_that_says_youre_blocked_lands_in_waiting(shell, conn):
         waiting_on="Priya to send access",
     )
     shell.answers.append(answer)
-    filing = triage.ask(task, [], Config(), used_projects=[], today=TODAY)
-    assert triage.apply(conn, task, filing, task.links) == State.WAITING
+    filing = triage.ask(task, [], Config(), used_areas=[], today=TODAY)
+    assert triage.apply(conn, task, filing, task.links).state == State.WAITING
     assert store.get(conn, task.id).waiting_on == "Priya to send access"  # ty: ignore[invalid-argument-type]
 
 
@@ -270,5 +268,5 @@ def test_refiling_keeps_a_task_where_it_is(shell, conn):
     task = _captured(conn)
     store.set_state(conn, task.id, State.DOING)  # ty: ignore[invalid-argument-type]
     task = store.get(conn, task.id)  # ty: ignore[invalid-argument-type]
-    filing = triage.ask(task, [], Config(), used_projects=[], today=TODAY)
-    assert triage.apply(conn, task, filing, task.links) == State.DOING
+    filing = triage.ask(task, [], Config(), used_areas=[], today=TODAY)
+    assert triage.apply(conn, task, filing, task.links).state == State.DOING

@@ -229,7 +229,7 @@ def test_the_prompt_gives_the_check_in_date_and_what_the_person_already_has(shel
         followups=[fu("Mine", by_you=True), fu("Claude's old", status=FollowupStatus.OPEN)],
     )
     text = triage.prompt(
-        task, [], projects={}, used=[], today=TODAY, check_in=TODAY + timedelta(days=14)
+        task, [], areas={}, used=[], today=TODAY, check_in=TODAY + timedelta(days=14)
     )
     assert "The default check-in date is Wednesday 2026-10-14." in text
     assert "- Mine (open)" in text
@@ -255,7 +255,7 @@ def test_applying_a_followed_item(shell, conn):
     task = Task("t")
     store.add(conn, task)
     filing = triage.parse(answer(track="following"), fallback_title="t", n_links=0, check_in=TODAY)
-    assert triage.apply(conn, task, filing, []) == State.FOLLOWING
+    assert triage.apply(conn, task, filing, []).state == State.FOLLOWING
     saved = store.get(conn, task.id)  # ty: ignore[invalid-argument-type]
     assert saved.state == State.FOLLOWING
     assert saved.followups[0].due == TODAY

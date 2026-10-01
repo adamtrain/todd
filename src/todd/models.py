@@ -218,14 +218,30 @@ class Entry:
     id: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TaskRef:
+    """Another task, as far as a task needs to know it: its project, or what blocks it."""
+
+    id: int
+    title: str
+    state: State
+
+
 @dataclass(slots=True)
 class Task:
+    """A task, or a project: a piece of work moved forward through tasks of its own."""
+
     title: str
     description: str = ""
     state: State = State.INBOX
     next_action: str | None = None
     kind: Kind | None = None
-    project: str | None = None
+    area: str | None = None  # the kind of work it is: platform, hiring…
+    is_project: bool = False
+    project_id: int | None = None  # the project this task is part of
+    project_position: int | None = None  # its place among the project's tasks
+    project: TaskRef | None = None
+    blockers: list[TaskRef] = field(default_factory=list)  # tasks that must be done first
     priority: Priority = Priority.NORMAL
     due: date | None = None
     due_hint: str | None = None
@@ -251,3 +267,12 @@ class Task:
     @property
     def open_followups(self) -> list[Followup]:
         return [f for f in self.followups if f.open]
+
+    @property
+    def open_blockers(self) -> list[TaskRef]:
+        """What still has to happen first. A dropped blocker is out of the way too."""
+        return [b for b in self.blockers if not b.state.closed]
+
+    @property
+    def blocked(self) -> bool:
+        return bool(self.open_blockers)

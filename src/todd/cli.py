@@ -190,22 +190,27 @@ def _queue(
     session: Session,
     *,
     closed: bool = False,
-    project: str | None = None,
+    area: str | None = None,
     kind: Kind | None = None,
     person: str | None = None,
 ) -> None:
+    """The queue: tasks you can act on. Projects show through their tasks, and blocked tasks
+    wait under their project until whatever blocks them is done."""
     try:
         conn = session.conn
         states = list(render.QUEUE_ORDER) + (list(render.CLOSED_ORDER) if closed else [])
         who = session.names.aliases(person) if person else None
-        tasks = store.tasks(conn, states, project=project, kind=kind, person=who)
+        tasks = store.tasks(conn, states, area=area, kind=kind, person=who, projects=False)
+        blocked = {t.id for t in tasks if t.blocked and not t.state.closed}
+        tasks = [t for t in tasks if t.id not in blocked]
         now = store.now()
         local = datetime.now().astimezone()
         monday = (local - timedelta(days=local.weekday())).replace(hour=0, minute=0, second=0)
         done = store.closed_since(conn, monday)
-        filtered = bool(project or kind or person)
+        filtered = bool(area or kind or person)
         due = [] if filtered else _with_tasks(conn, store.open_followups(conn), due_only=True)
-        following = store.counts(conn).get(State.FOLLOWING, 0)
+        following = len(store.tasks(conn, [State.FOLLOWING], projects=False))
+        stalled = [] if filtered else _stalled(conn)
     except ToddError as e:
         raise _fail(e) from e
     render.queue(
@@ -217,8 +222,21 @@ def _queue(
         closed=closed,
         due=due,
         following=0 if filtered else following,
+        blocked=len(blocked),
+        stalled=stalled,
         names=session.names,
     )
+
+
+def _stalled(conn: sqlite3.Connection) -> list[Task]:
+    """Active projects with nothing open left to do: each needs a next task."""
+    active = [s for s in State if not s.closed and s not in (State.FOLLOWING, State.INBOX)]
+    stalled = []
+    for project in store.tasks(conn, active, projects=True):
+        assert project.id is not None
+        if all(t.state.closed for t in store.project_tasks(conn, project.id)):
+            stalled.append(project)
+    return stalled
 
 
 def _with_tasks(
@@ -243,8 +261,8 @@ def list_tasks(
     everything: Annotated[
         bool, typer.Option("--all", "-a", help="Include done and dropped tasks.")
     ] = False,
-    project: Annotated[
-        str | None, typer.Option("--project", "-p", help="Only this project.", show_default=False)
+    area: Annotated[
+        str | None, typer.Option("--area", help="Only this area of work.", show_default=False)
     ] = None,
     kind: Annotated[
         Kind | None,
@@ -260,18 +278,19 @@ def list_tasks(
     ] = None,
 ) -> None:
     """Show your queue: what you're doing, what's next, and what's stuck."""
-    _queue(_session(ctx), closed=everything, project=project, kind=kind, person=person)
+    _queue(_session(ctx), closed=everything, area=area, kind=kind, person=person)
 
 
 @app.command()
 def show(ctx: typer.Context, task_id: TaskId) -> None:
-    """Everything about one task: its links, the messages you saved, and its timeline."""
+    """Everything about a task (or a project and its tasks): links, messages, timeline."""
     session = _session(ctx)
     try:
         task = store.get(session.conn, task_id)
+        tasks = store.project_tasks(session.conn, task_id) if task.is_project else None
     except ToddError as e:
         raise _fail(e) from e
-    render.show(out, task, today=_today(), names=session.names)
+    render.show(out, task, today=_today(), names=session.names, tasks=tasks)
 
 
 # ── Capturing ────────────────────────────────────────────────────────────────
@@ -337,8 +356,9 @@ def _provisional_title(capture: capturing.Capture) -> str:
     return title[:120] or "Untitled"
 
 
-def _file(session: Session, task: Task, *, label: str = "Filing") -> Task:
-    """Look up the task's links, then have Claude file it. Returns the task as saved."""
+def _file(session: Session, task: Task, *, label: str = "Filing", as_project: bool = False) -> Task:
+    """Look up the task's links, then have Claude file it. Returns the task (or the project
+    it became) as saved."""
     assert task.id is not None
     config, conn = session.config, session.conn
     w = render.width(err)
@@ -356,25 +376,53 @@ def _file(session: Session, task: Task, *, label: str = "Filing") -> Task:
             task,
             found,
             config,
-            used_projects=store.projects(conn),
+            used_areas=store.areas(conn),
             today=_today(),
             names=session.names,
+            as_project=as_project,
         )
-    triage.apply(conn, task, filing, [g.link for g in found])
-    filed = store.get(conn, task.id)
-    if filed.needs_title and _interactive():
-        _ask_for_title(session, filed)
-        filed = store.get(conn, task.id)
-    return filed
+    applied = triage.apply(conn, task, filing, [g.link for g in found], as_project=as_project)
+    if _interactive():
+        for task_id in [task.id, *applied.tasks]:
+            if (each := store.get(conn, task_id)).needs_title:
+                _ask_for_title(session, each)
+    return store.get(conn, task.id)
+
+
+def _print_filed(session: Session, filed: Task) -> None:
+    w = render.width(out)
+    if filed.is_project:
+        assert filed.id is not None
+        tasks = store.project_tasks(session.conn, filed.id)
+        render.success(
+            err,
+            Text.assemble(
+                f"Filed #{filed.id} as a project with {render.plural(len(tasks), 'task')}"
+            ),
+        )
+        out.print(render.card(filed, _today(), w, session.names))
+        if tasks:
+            out.print(render.project_tasks(tasks, _today(), w, session.names))
+        else:
+            out.print(
+                Text.assemble(
+                    ("  No tasks yet. Add one: ", render.FAINT),
+                    (f'todd add "…" --in {filed.id}', "bold"),
+                )
+            )
+        return
+    render.success(err, Text.assemble(f"Filed #{filed.id} in ", render.state_word(filed.state)))
+    out.print(render.card(filed, _today(), w, session.names))
 
 
 def _ask_for_title(session: Session, task: Task) -> None:
     """Claude couldn't tell what the task is, so ask rather than guess."""
     assert task.id is not None
+    which = f"task {task.project_position} of this project" if task.project_id else "this"
     err.print(
         Text.assemble(
             ("? ", f"bold {render.WARN}"),
-            "Claude couldn't tell what this is from what it could read.",
+            f"Claude couldn't tell what {which} is from what it could read.",
         )
     )
     title = Prompt.ask(
@@ -434,8 +482,28 @@ def add(
             show_default=False,
         ),
     ] = None,
+    as_project: Annotated[
+        bool,
+        typer.Option("--project", help="It's a project, even if its tasks aren't clear yet."),
+    ] = False,
+    into: Annotated[
+        int | None,
+        typer.Option("--in", help="Add it as a task in this project.", show_default=False),
+    ] = None,
+    after: Annotated[
+        str | None,
+        typer.Option(
+            "--after",
+            help="With --in: the task(s) it waits on, like 14 or 14,15, or none. "
+            "Default: the project's last open task.",
+            show_default=False,
+        ),
+    ] = None,
 ) -> None:
     """Capture a task. Claude files it: title, next step, due date, follow-ups and more.
+
+    Describe a chain ("…once that's in, a bug bash, then configure it for Acme") and Claude
+    makes a project, with a task for each part waiting on the one before.
 
     Mention follow-ups in your own words ("tell Theo when I'm done") and they're kept too.
 
@@ -445,6 +513,10 @@ def add(
     """
     session = _session(ctx)
     try:
+        if into is not None and as_project:
+            raise ToddError("A task can go --in a project, or be a --project, but not both.")
+        if after is not None and into is None:
+            raise ToddError("--after only means something with --in.")
         config = session.config
         site, keys = config.jira.site, config.jira.known_keys
         interactive = _interactive()
@@ -480,13 +552,28 @@ def add(
                     + ", ".join(f"#{n}" for n in others)
                     + ".",
                 )
+        project = store.get(conn, into) if into is not None else None
+        if project is not None and not project.is_project:
+            raise ToddError(
+                f"#{into} isn't a project.",
+                hint="See your projects with [bold]todd projects[/].",
+            )
         task = Task(
             title=_provisional_title(capture),
             description=capture.description,
             links=capture.links,
         )
+        if project is not None:
+            assert project.id is not None
+            task.project_id = project.id
+            task.project_position = store.next_position(conn, project.id)
+        waits_on = _parse_after(conn, after, project) if project is not None else []
         store.add(conn, task)
         assert task.id is not None
+        with db.tx(conn):
+            for blocker in waits_on:
+                store.add_blocker(conn, task.id, blocker)
+        task = store.get(conn, task.id)
         err.print(render.capture_line(capture, origin, render.width(err)))
         if raw:
             render.success(
@@ -502,7 +589,7 @@ def add(
         raise _fail(e) from e
 
     try:
-        task = _file(session, task)
+        task = _file(session, task, as_project=as_project)
     except ToddError as e:
         render.error(err, str(e), detail=e.detail, hint=e.hint)
         render.warn(
@@ -514,8 +601,26 @@ def add(
     except KeyboardInterrupt:
         err.print(Text(f"Stopped. #{task.id} is saved in your inbox, unfiled.", style=render.FAINT))
         raise typer.Exit(130) from None
-    render.success(err, Text.assemble(f"Filed #{task.id} in ", render.state_word(task.state)))
-    out.print(render.card(task, _today(), render.width(out), session.names))
+    _print_filed(session, task)
+
+
+def _parse_after(conn: sqlite3.Connection, after: str | None, project: Task) -> list[int]:
+    """Which tasks a new task in `project` waits on: as given, or the last open one."""
+    assert project.id is not None
+    if after is None:
+        open_tasks = [t for t in store.project_tasks(conn, project.id) if not t.state.closed]
+        return [open_tasks[-1].id] if open_tasks and open_tasks[-1].id is not None else []
+    if after.strip().lower() in ("", "none", "nothing"):
+        return []
+    found = []
+    for part in after.replace(",", " ").split():
+        try:
+            number = int(part.lstrip("#"))
+        except ValueError:
+            raise ToddError(f"--after {after!r}: {part!r} isn't a task number.") from None
+        store.get(conn, number)
+        found.append(number)
+    return found
 
 
 @app.command("triage")
@@ -539,10 +644,7 @@ def triage_command(
         for task in targets:
             err.print(Text.assemble(("◇ ", render.ACCENT), (f"#{task.id} ", "bold"), task.title))
             filed = _file(session, task, label="Refiling" if task.triaged else "Filing")
-            render.success(
-                err, Text.assemble(f"Filed #{filed.id} in ", render.state_word(filed.state))
-            )
-            out.print(render.card(filed, _today(), render.width(out), session.names))
+            _print_filed(session, filed)
     except ToddError as e:
         raise _fail(e) from e
 
@@ -649,9 +751,17 @@ def edit(
         str | None, typer.Option("--next", "-n", help="The next concrete step.", show_default=False)
     ] = None,
     kind: Annotated[Kind | None, typer.Option("--kind", "-k", show_default=False)] = None,
-    project: Annotated[
+    area: Annotated[
         str | None,
-        typer.Option("--project", "-p", help='A project, or "none".', show_default=False),
+        typer.Option("--area", "-a", help='An area of work, or "none".', show_default=False),
+    ] = None,
+    into: Annotated[
+        str | None,
+        typer.Option(
+            "--in",
+            help='Make it a task in this project (its number), or "none".',
+            show_default=False,
+        ),
     ] = None,
     priority: Annotated[
         Priority | None, typer.Option("--priority", "-P", show_default=False)
@@ -681,10 +791,22 @@ def edit(
             fields["next_action"] = next_action.strip() or None
         if kind is not None:
             fields["kind"] = kind
-        if project is not None:
-            fields["project"] = (
-                None if project.strip().lower() in ("", "none") else project.strip().lower()
-            )
+        if area is not None:
+            fields["area"] = None if area.strip().lower() in ("", "none") else area.strip().lower()
+        if into is not None:
+            if into.strip().lower() in ("", "none"):
+                fields["project_id"] = fields["project_position"] = None
+            else:
+                try:
+                    project_id = int(into.lstrip("#"))
+                except ValueError:
+                    raise ToddError(f"--in {into!r} isn't a project number.") from None
+                if not store.get(conn, project_id).is_project:
+                    raise ToddError(f"#{project_id} isn't a project.")
+                if project_id == task_id:
+                    raise ToddError("A project can't be one of its own tasks.")
+                fields["project_id"] = project_id
+                fields["project_position"] = store.next_position(conn, project_id)
         if priority is not None:
             fields["priority"] = priority
         if due is not None:
@@ -704,7 +826,11 @@ def edit(
                 "Edited "
                 + ", ".join(
                     [
-                        *(k.replace("_", " ") for k in fields if k != "needs_title"),
+                        *(
+                            k.replace("_", " ")
+                            for k in fields
+                            if k not in ("needs_title", "project_position")
+                        ),
                         *(["people"] if people is not None else []),
                     ]
                 ),
@@ -978,6 +1104,13 @@ def _transition(
         )
         if state == State.WAITING and task.waiting_on:
             out.print(Text(f"  waiting on {task.waiting_on}", style=render.WARN))
+        if not state.closed and task.open_blockers:
+            waits = ", ".join(f"#{b.id} {b.title}" for b in task.open_blockers)
+            render.warn(err, f"#{task_id} is still blocked by {waits}.")
+        if task.is_project and state.closed:
+            still = [t for t in store.project_tasks(conn, task_id) if not t.state.closed]
+            if still:
+                render.warn(err, f"#{task_id} still has {render.plural(len(still), 'open task')}.")
         jira = session.config.jira
         wants_jira = any(
             link.ref and jira.target(link.ref, state) for link in effects.tickets(task)
@@ -997,12 +1130,61 @@ def _transition(
             err.print(Text(f"  ↪ No longer needed: {followup.action}", style=render.FAINT))
         if changes.fired:
             _fire(session, store.get(conn, task_id), changes.fired, news=note_text)
-        if local:
-            return
-        if targets := effects.slack_prompt(task, state, session.config):
+        _report_blocking(conn, task_id, old, state)
+        if not local and (targets := effects.slack_prompt(task, state, session.config)):
             _reply(session, store.get(conn, task_id), targets, news=note_text)
+        if state.closed and task.project is not None and not task.project.state.closed:
+            _maybe_finish_project(ctx, task.project.id, yes=yes, local=local, no_jira=no_jira)
     except ToddError as e:
         raise _fail(e) from e
+
+
+def _report_blocking(conn: sqlite3.Connection, task_id: int, old: State, new: State) -> None:
+    """Say which tasks this move frees up (or holds up again)."""
+    if new.closed == old.closed:
+        return
+    for dependent in store.dependents(conn, task_id):
+        if dependent.state.closed:
+            continue
+        if new.closed and not dependent.blocked:
+            err.print(
+                Text.assemble(
+                    ("  ▸ Unblocked: ", render.PROJECT),
+                    (f"#{dependent.id} ", "bold"),
+                    dependent.title,
+                    "  ",
+                    render.link_badges(dependent),
+                )
+            )
+        elif not new.closed:
+            err.print(
+                Text(
+                    f"  #{dependent.id} {dependent.title} waits on this again.", style=render.FAINT
+                )
+            )
+
+
+def _maybe_finish_project(
+    ctx: typer.Context, project_id: int, *, yes: bool, local: bool, no_jira: bool
+) -> None:
+    """When a project's last open task closes, ask whether the project is done too."""
+    conn = _session(ctx).conn
+    if any(not t.state.closed for t in store.project_tasks(conn, project_id)):
+        return
+    project = store.get(conn, project_id)
+    err.print()
+    question = f"That was the last open task in “{project.title}”. Is the project done?"
+    if _interactive() and _yes(question, default=False):
+        _transition(ctx, project_id, State.DONE, None, yes=yes, local=local, no_jira=no_jira)
+        return
+    err.print(
+        Text.assemble(
+            ("▸ ", render.PROJECT),
+            (f"#{project_id} {project.title}", render.PROJECT),
+            (" needs a next task: ", render.FAINT),
+            (f'todd add "…" --in {project_id}', "bold"),
+        )
+    )
 
 
 @app.command()
@@ -1166,6 +1348,80 @@ def sync(ctx: typer.Context, task_id: TaskId, yes: Yes = False) -> None:
         _push_jira(session, task, task.state, yes=yes)
     except ToddError as e:
         raise _fail(e) from e
+
+
+# ── Projects ─────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def projects(
+    ctx: typer.Context,
+    everything: Annotated[
+        bool, typer.Option("--all", "-a", help="Include finished and dropped projects.")
+    ] = False,
+) -> None:
+    """Your projects, each with its tasks in order and what's blocking what."""
+    session = _session(ctx)
+    try:
+        conn = session.conn
+        states = None if everything else [s for s in State if not s.closed]
+        items = []
+        for project in store.tasks(conn, states, projects=True):
+            assert project.id is not None
+            items.append((project, store.project_tasks(conn, project.id)))
+    except ToddError as e:
+        raise _fail(e) from e
+    render.projects(out, items, today=_today(), names=session.names)
+
+
+@app.command()
+def block(
+    ctx: typer.Context,
+    task_id: TaskId,
+    on: Annotated[
+        list[int], typer.Option("--on", help="A task it can't start before. Repeat for more.")
+    ],
+) -> None:
+    """Say a task can't start until another one is done."""
+    try:
+        conn = _session(ctx).conn
+        task = store.get(conn, task_id)
+        blockers = [store.get(conn, number) for number in on]
+        with db.tx(conn):
+            for blocker in blockers:
+                assert blocker.id is not None
+                store.add_blocker(conn, task_id, blocker.id)
+                store.log(conn, task_id, EntryKind.NOTE, f"Waits on #{blocker.id}")
+    except ToddError as e:
+        raise _fail(e) from e
+    names = ", ".join(f"#{b.id} {b.title}" for b in blockers)
+    render.success(err, Text.assemble((f"#{task.id} ", "bold"), f"waits on {names}"))
+
+
+@app.command()
+def unblock(
+    ctx: typer.Context,
+    task_id: TaskId,
+    on: Annotated[
+        int | None,
+        typer.Option("--on", help="Only stop waiting on this task.", show_default=False),
+    ] = None,
+) -> None:
+    """Let a task start without waiting (on one task, or on anything)."""
+    try:
+        conn = _session(ctx).conn
+        store.get(conn, task_id)
+        with db.tx(conn):
+            removed = store.remove_blockers(conn, task_id, on)
+            if removed:
+                what = f"#{on}" if on is not None else "anything"
+                store.log(conn, task_id, EntryKind.NOTE, f"No longer waits on {what}")
+    except ToddError as e:
+        raise _fail(e) from e
+    if not removed:
+        render.warn(err, f"#{task_id} wasn't waiting on {'#' + str(on) if on else 'anything'}.")
+        return
+    render.success(err, f"#{task_id} no longer waits on {'#' + str(on) if on else 'anything'}.")
 
 
 # ── Following, links, roles, refreshing ──────────────────────────────────────
@@ -1548,12 +1804,12 @@ def config_command(
             (" · offers to reply on " + ", ".join(sorted(st.label for st in s.prompt_on)), faint),
         )
     )
-    if config.projects:
+    if config.areas:
         out.print()
-        for name, hint in config.projects.items():
+        for name, hint in config.areas.items():
             out.print(
                 Text.assemble(
-                    ("Project   ", faint),
+                    ("Area      ", faint),
                     (name, render.ACCENT),
                     (f"  {hint}" if hint else "", faint),
                 )
@@ -1748,6 +2004,7 @@ HELP_LAYOUT = {
     "Capture and edit": ["add", "link", "note", "edit", "role", "triage"],
     "Look": ["ls", "show", "following", "links", "open"],
     "Move": ["start", "wait", "review", "done", "follow", "drop", "reopen", "move"],
+    "Projects": ["projects", "block", "unblock"],
     "Jira, GitHub and Slack": ["reply", "sync", "refresh"],
     "People and follow-ups": ["nick", "followup"],
     "Setup": ["config", "doctor"],

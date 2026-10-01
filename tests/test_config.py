@@ -22,7 +22,7 @@ def test_defaults_when_there_is_no_file(tmp_path):
 def test_the_starter_template_parses_to_the_defaults():
     parsed = config.parse(tomllib.loads(config.TEMPLATE))
     assert parsed.jira.status == config.DEFAULT_JIRA_STATUS
-    assert parsed.projects == {}
+    assert parsed.areas == {}
 
 
 def test_per_project_overrides(config_file):
@@ -45,7 +45,7 @@ done = "Closed"
 [slack]
 prompt_on = ["done"]
 
-[projects]
+[areas]
 platform = "Infra, CI, migrations"
 """
     )
@@ -59,7 +59,7 @@ platform = "Infra, CI, migrations"
     assert jira.target("OPS-9", State.DONE) == "Closed"
     assert jira.target("OPS-9", State.DOING) == "In Progress"
     assert loaded.slack.prompt_on == {State.DONE}
-    assert loaded.projects == {"platform": "Infra, CI, migrations"}
+    assert loaded.areas == {"platform": "Infra, CI, migrations"}
 
 
 def test_listing_status_replaces_the_defaults(config_file):
@@ -75,7 +75,7 @@ def test_listing_status_replaces_the_defaults(config_file):
         ("[jira.status]\nfinished = 'Done'\n", "isn't a todd state"),
         ("[claude]\neffort = 'extreme'\n", "effort must be one of"),
         ("[claude]\ntimeout = true\n", "wrong type"),
-        ("[projects]\nplatform = 3\n", "short description"),
+        ("[areas]\nplatform = 3\n", "short description"),
         ("[jira\n", "isn't valid TOML"),
     ],
 )

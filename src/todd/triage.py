@@ -217,6 +217,13 @@ threads are unresolved), and give every pull request in the stack the same role.
 GitHub users are shown as "Name (GitHub @login)" when the person has told todd what they call \
 them. Use that name in people, waiting_on and follow_ups; otherwise use the login.
 
+Usually a capture is one task. Sometimes it's a project: work the person moves forward through \
+several tasks, where later ones can't start until earlier ones are done ("waiting on review for \
+this stack; once it's in, a bug bash, then configure the feature for Acme"), often with a ticket \
+for each. Then the record describes the project as a whole, and tasks lists its tasks in order. \
+Only list tasks the capture names; never split one piece of work into tasks of your own \
+invention. For a single task, tasks is empty.
+
 The fields:
 - title: what needs doing, as a short imperative phrase under 80 characters, like "Send Priya \
 the Q3 migration numbers". Keep the person's own terms: names, systems, ticket keys.
@@ -229,7 +236,7 @@ something vague like "Address Slack message" or "Handle request". Otherwise fals
 - kind: do (produce or change something), reply (someone asked something and is owed an \
 answer), review (look over someone else's work), decide (make or drive a decision), follow_up \
 (chase someone for something they owe), investigate (find something out, debug, research).
-- project: one of the listed projects if one fits; otherwise a short lowercase name that would \
+- area: one of the listed areas if one fits; otherwise a short lowercase name that would \
 group similar work (reuse a name that's been used before where you can), or null if nothing \
 points to one.
 - priority: normal unless the material says otherwise. urgent: blocking others right now, an \
@@ -272,6 +279,16 @@ a pull request), reference (background). Null if you can't tell.
 For a pull request in a stack, say what that one does; todd already shows its position. Null if \
 there's nothing useful to say.
   - author: who wrote the pasted message, when the text makes that clear. Otherwise null.
+- tasks: for a project, its tasks in order; otherwise empty. For a project, the fields above \
+describe the project: title names its goal ("Launch the live feature for Acme"), next_action is \
+the next thing to do in its first open task, and follow_ups are only the ones about the project \
+as a whole. Each task has title, needs_title, next_action, kind, track, waiting_on, priority, \
+due, due_hint, people and follow_ups, meaning what they mean above but for that task, plus:
+  - links: the indexes of the links that belong to that task, like its Jira ticket and its pull \
+requests. Every pull request in a stack goes with the same task. Links about the project as a \
+whole (an epic, the conversation it came from) belong to no task.
+  - after: the numbers of the tasks (1 for the first) that must be done before this one can \
+start. Usually just the one before it; empty for the first.
 
 Missing information is normal. Use null rather than guess.\
 """
@@ -283,6 +300,47 @@ _STATE_OR_NULL = {
     "enum": ["doing", "waiting", "in_review", "done", None],
 }
 
+_FOLLOW_UPS = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string"},
+            "person": _NULLABLE_STRING,
+            "when": _STATE_OR_NULL,
+            "due": _NULLABLE_STRING,
+            "unless": _STATE_OR_NULL,
+        },
+        "required": ["action", "person", "when", "due", "unless"],
+        "additionalProperties": False,
+    },
+}
+
+_TASK_FIELDS: dict = {
+    "title": _NULLABLE_STRING,
+    "needs_title": {"type": "boolean"},
+    "next_action": {"type": "string"},
+    "track": {"type": "string", "enum": ["todo", "waiting", "following"]},
+    "kind": {"type": "string", "enum": [k.value for k in Kind]},
+    "priority": {"type": "string", "enum": [p.value for p in Priority]},
+    "due": _NULLABLE_STRING,
+    "due_hint": _NULLABLE_STRING,
+    "people": {"type": "array", "items": {"type": "string"}},
+    "waiting_on": _NULLABLE_STRING,
+    "follow_ups": _FOLLOW_UPS,
+}
+
+_PROJECT_TASK = {
+    "type": "object",
+    "properties": {
+        **_TASK_FIELDS,
+        "links": {"type": "array", "items": {"type": "integer"}},
+        "after": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": [*_TASK_FIELDS, "links", "after"],
+    "additionalProperties": False,
+}
+
 SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -291,7 +349,7 @@ SCHEMA: dict = {
         "next_action": {"type": "string"},
         "track": {"type": "string", "enum": ["todo", "waiting", "following"]},
         "kind": {"type": "string", "enum": [k.value for k in Kind]},
-        "project": _NULLABLE_STRING,
+        "area": _NULLABLE_STRING,
         "priority": {"type": "string", "enum": [p.value for p in Priority]},
         "due": _NULLABLE_STRING,
         "due_hint": _NULLABLE_STRING,
@@ -311,21 +369,8 @@ SCHEMA: dict = {
                 "additionalProperties": False,
             },
         },
-        "follow_ups": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string"},
-                    "person": _NULLABLE_STRING,
-                    "when": _STATE_OR_NULL,
-                    "due": _NULLABLE_STRING,
-                    "unless": _STATE_OR_NULL,
-                },
-                "required": ["action", "person", "when", "due", "unless"],
-                "additionalProperties": False,
-            },
-        },
+        "follow_ups": _FOLLOW_UPS,
+        "tasks": {"type": "array", "items": _PROJECT_TASK},
     },
     "required": [
         "title",
@@ -334,13 +379,14 @@ SCHEMA: dict = {
         "follow_ups",
         "next_action",
         "kind",
-        "project",
+        "area",
         "priority",
         "due",
         "due_hint",
         "people",
         "waiting_on",
         "links",
+        "tasks",
     ],
     "additionalProperties": False,
 }
@@ -445,11 +491,13 @@ def prompt(
     task: Task,
     gathered: list[Gathered],
     *,
-    projects: dict[str, str],
+    areas: dict[str, str],
     used: list[str],
     today: date,
     check_in: date | None = None,
     names: Nicknames | None = None,
+    as_project: bool = False,
+    may_split: bool = True,
 ) -> str:
     names = names or Nicknames()
     parts = [f"Today is {today:%A} {today.isoformat()}."]
@@ -468,14 +516,18 @@ def prompt(
     parts.append("")
     if existing := _describe_followups(task.followups):
         parts += [*existing, ""]
-    if projects:
-        parts.append("Projects:")
-        parts += [f"- {name}: {hint}" if hint else f"- {name}" for name, hint in projects.items()]
-    others = [p for p in used if p.casefold() not in {k.casefold() for k in projects}]
+    if as_project:
+        parts += ["The person says this is a project, even if it has no tasks yet.", ""]
+    elif not may_split:
+        parts += ["This is being refiled, not captured: keep tasks empty.", ""]
+    if areas:
+        parts.append("Areas:")
+        parts += [f"- {name}: {hint}" if hint else f"- {name}" for name, hint in areas.items()]
+    others = [a for a in used if a.casefold() not in {k.casefold() for k in areas}]
     if others:
-        parts.append("Project names used before: " + ", ".join(others[:30]))
-    if not projects and not others:
-        parts.append("No projects yet.")
+        parts.append("Area names used before: " + ", ".join(others[:30]))
+    if not areas and not others:
+        parts.append("No areas yet.")
     return "\n".join(parts).strip() + "\n"
 
 
@@ -497,13 +549,20 @@ class Filing:
     followups: list[Followup] = field(default_factory=list)
     next_action: str | None = None
     kind: Kind | None = None
-    project: str | None = None
+    area: str | None = None
     priority: Priority = Priority.NORMAL
     due: date | None = None
     due_hint: str | None = None
     people: list[str] = field(default_factory=list)
     waiting_on: str | None = None
     links: dict[int, LinkVerdict] = field(default_factory=dict)
+    tasks: list[Filing] = field(default_factory=list)  # a project's tasks, in order
+    link_indexes: list[int] = field(default_factory=list)  # for one of those: its links
+    after: list[int] = field(default_factory=list)  # …and the tasks it waits on (1-based)
+
+    @property
+    def is_project(self) -> bool:
+        return bool(self.tasks)
 
 
 def _text(value: object) -> str | None:
@@ -543,28 +602,12 @@ def _followups(items: object) -> list[Followup]:
     return found
 
 
-def parse(
-    answer: dict, *, fallback_title: str, n_links: int, check_in: date | None = None
-) -> Filing:
-    """Claude's answer as a Filing, forgiving anything malformed.
+def _item(answer: dict, *, fallback_title: str, check_in: date | None) -> Filing:
+    """The fields a task and a project share.
 
     A followed item always gets a dated check-in, on `check_in` if Claude didn't give one.
     """
-    due = _date(answer.get("due"))
-    verdicts: dict[int, LinkVerdict] = {}
-    for item in answer.get("links") or []:
-        if not isinstance(item, dict):
-            continue
-        index = item.get("index")
-        if not isinstance(index, int) or not 1 <= index <= n_links:
-            continue
-        verdicts[index] = LinkVerdict(
-            role=_enum(Role, item.get("role")),
-            note=_text(item.get("note")),
-            author=_text(item.get("author")),
-        )
     people = [p.strip() for p in answer.get("people") or [] if isinstance(p, str) and p.strip()]
-    project = _text(answer.get("project"))
     title = _text(answer.get("title"))
     track = {"waiting": State.WAITING, "following": State.FOLLOWING}.get(
         str(answer.get("track")), State.TODO
@@ -582,14 +625,49 @@ def parse(
         followups=followups,
         next_action=_text(answer.get("next_action")),
         kind=_enum(Kind, answer.get("kind")),
-        project=project.lower() if project else None,
         priority=_enum(Priority, answer.get("priority"), Priority.NORMAL) or Priority.NORMAL,
-        due=due,
+        due=_date(answer.get("due")),
         due_hint=_text(answer.get("due_hint")),
         people=people,
         waiting_on=waiting_on,
-        links=verdicts,
     )
+
+
+def parse(
+    answer: dict, *, fallback_title: str, n_links: int, check_in: date | None = None
+) -> Filing:
+    """Claude's answer as a Filing (a task, or a project with its tasks), forgiving anything
+    malformed."""
+    filing = _item(answer, fallback_title=fallback_title, check_in=check_in)
+    area = _text(answer.get("area"))
+    filing.area = area.lower() if area else None
+    verdicts: dict[int, LinkVerdict] = {}
+    for item in answer.get("links") or []:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if not isinstance(index, int) or not 1 <= index <= n_links:
+            continue
+        verdicts[index] = LinkVerdict(
+            role=_enum(Role, item.get("role")),
+            note=_text(item.get("note")),
+            author=_text(item.get("author")),
+        )
+    filing.links = verdicts
+    raw = [t for t in answer.get("tasks") or [] if isinstance(t, dict)]
+    for i, item in enumerate(raw, 1):
+        task = _item(item, fallback_title=f"Task {i} of {filing.title}", check_in=check_in)
+        task.area = filing.area
+        task.link_indexes = [
+            n for n in item.get("links") or [] if isinstance(n, int) and 1 <= n <= n_links
+        ]
+        task.after = [
+            n
+            for n in item.get("after") or []
+            if isinstance(n, int) and 1 <= n <= len(raw) and n != i
+        ]
+        filing.tasks.append(task)
+    return filing
 
 
 def ask(
@@ -597,25 +675,40 @@ def ask(
     gathered: list[Gathered],
     config: Config,
     *,
-    used_projects: list[str],
+    used_areas: list[str],
     today: date,
     claude: Claude | None = None,
     names: Nicknames | None = None,
+    as_project: bool = False,
 ) -> Filing:
-    """Ask Claude to file the task, given what `gather` found."""
+    """Ask Claude to file the task, given what `gather` found.
+
+    Only a fresh capture can turn into a project with tasks; refiling keeps a task a task.
+    """
     claude = claude or Claude(config.claude)
     check_in = today + timedelta(days=config.following.check_in_days)
+    may_split = splittable(task)
     text = prompt(
         task,
         gathered,
-        projects=config.projects,
-        used=used_projects,
+        areas=config.areas,
+        used=used_areas,
         today=today,
         check_in=check_in,
         names=names,
+        as_project=as_project and may_split,
+        may_split=may_split,
     )
     answer = claude.structured(text, system=SYSTEM, schema=SCHEMA)
-    return parse(answer, fallback_title=task.title, n_links=len(gathered), check_in=check_in)
+    filing = parse(answer, fallback_title=task.title, n_links=len(gathered), check_in=check_in)
+    if not may_split:
+        filing.tasks = []
+    return filing
+
+
+def splittable(task: Task) -> bool:
+    """Whether filing this task may turn it into a project: only a fresh capture can."""
+    return task.state == State.INBOX and not task.is_project and task.project_id is None
 
 
 # ── Saving ───────────────────────────────────────────────────────────────────
@@ -650,29 +743,89 @@ def save_lookups(conn: sqlite3.Connection, task_id: int, gathered: list[Gathered
             store.update_link(conn, link.id, **fields)
 
 
-def apply(conn: sqlite3.Connection, task: Task, filing: Filing, links: list[Link]) -> State:
+@dataclass(slots=True)
+class Applied:
+    state: State  # where the task (or project) is now
+    tasks: list[int] = field(default_factory=list)  # a new project's tasks, in order
+
+
+def _write(conn: sqlite3.Connection, task_id: int, filing: Filing) -> None:
+    """The fields a task and a project share (inside the caller's transaction)."""
+    store.update(
+        conn,
+        task_id,
+        title=filing.title,
+        next_action=filing.next_action,
+        kind=filing.kind,
+        area=filing.area,
+        priority=filing.priority,
+        due=filing.due,
+        due_hint=filing.due_hint,
+        needs_title=filing.needs_title,
+        triaged_at=store.now(),
+    )
+    store.set_people(conn, task_id, filing.people)
+    store.replace_claudes_followups(conn, task_id, filing.followups)
+
+
+def _create_tasks(
+    conn: sqlite3.Connection, project: Task, filing: Filing, links: list[Link]
+) -> list[int]:
+    """Make a new project's tasks, hand each its links, and set what waits on what."""
+    assert project.id is not None
+    created: list[int] = []
+    taken: set[int] = set()
+    for i, item in enumerate(filing.tasks, 1):
+        task = Task(title=item.title, state=item.track, project_id=project.id, project_position=i)
+        store.insert_task(conn, task)
+        assert task.id is not None
+        _write(conn, task.id, item)
+        if item.track == State.WAITING and item.waiting_on:
+            store.update(conn, task.id, waiting_on=item.waiting_on)
+        mine: list[int] = []
+        for index in item.link_indexes:
+            link = links[index - 1]
+            # A pull request brings the rest of its stack: a stack is one piece of work.
+            group = [o for o in links if o.stack == link.stack] if link.stack else [link]
+            for member in group:
+                if member.id is not None and member.id not in taken:
+                    mine.append(member.id)
+                    taken.add(member.id)
+        store.move_links(conn, mine, task.id)
+        store.log(conn, task.id, EntryKind.TRIAGE, f"Filed by Claude as task {i} of #{project.id}")
+        created.append(task.id)
+    for i, item in enumerate(filing.tasks, 1):
+        for n in item.after:
+            try:
+                store.add_blocker(conn, created[i - 1], created[n - 1])
+            except ToddError:
+                continue  # a loop Claude made up: leave that one out
+    store.reorder_links(conn, project.id, [])
+    return created
+
+
+def apply(
+    conn: sqlite3.Connection,
+    task: Task,
+    filing: Filing,
+    links: list[Link],
+    *,
+    as_project: bool = False,
+) -> Applied:
     """Write Claude's filing onto the task. A task in the inbox moves to to-do, waiting or
     following. Claude's earlier open follow-ups are replaced; yours are kept.
+
+    A fresh capture Claude found to be a project (or that you said is one) becomes the project,
+    and its tasks are created under it, each with its own links.
 
     `links` are the links as Claude saw them, in the order it numbered them.
     """
     assert task.id is not None
     state = task.state
+    becomes_project = (filing.is_project or as_project) and splittable(task)
+    created: list[int] = []
     with tx(conn):
-        store.update(
-            conn,
-            task.id,
-            title=filing.title,
-            next_action=filing.next_action,
-            kind=filing.kind,
-            project=filing.project,
-            priority=filing.priority,
-            due=filing.due,
-            due_hint=filing.due_hint,
-            needs_title=filing.needs_title,
-            triaged_at=store.now(),
-        )
-        store.set_people(conn, task.id, filing.people)
+        _write(conn, task.id, filing)
         for index, verdict in filing.links.items():
             link = links[index - 1]
             if link.id is None:
@@ -684,11 +837,17 @@ def apply(conn: sqlite3.Connection, task: Task, filing: Filing, links: list[Link
             if not link.role_fixed:
                 fields["role"] = verdict.role
             store.update_link(conn, link.id, **fields)
-        store.replace_claudes_followups(conn, task.id, filing.followups)
         if task.state == State.INBOX:
-            state = filing.track
-            store.move(conn, task.id, state, waiting_on=filing.waiting_on)
+            state = State.TODO if becomes_project else filing.track
+            waiting_on = None if becomes_project else filing.waiting_on
+            store.move(conn, task.id, state, waiting_on=waiting_on)
         elif task.state == State.WAITING and filing.waiting_on and not task.waiting_on:
             store.update(conn, task.id, waiting_on=filing.waiting_on)
-        store.log(conn, task.id, EntryKind.TRIAGE, "Filed by Claude")
-    return state
+        if becomes_project:
+            store.update(conn, task.id, is_project=True)
+            created = _create_tasks(conn, task, filing, links)
+            count = f"{len(created)} task{'' if len(created) == 1 else 's'}"
+            store.log(conn, task.id, EntryKind.TRIAGE, f"Filed by Claude as a project ({count})")
+        else:
+            store.log(conn, task.id, EntryKind.TRIAGE, "Filed by Claude")
+    return Applied(state, created)

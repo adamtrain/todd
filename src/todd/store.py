@@ -23,6 +23,7 @@ from todd.models import (
     Role,
     State,
     Task,
+    TaskRef,
 )
 
 TASK_FIELDS = frozenset(
@@ -31,13 +32,16 @@ TASK_FIELDS = frozenset(
         "description",
         "next_action",
         "kind",
-        "project",
+        "area",
         "priority",
         "due",
         "due_hint",
         "waiting_on",
         "triaged_at",
         "needs_title",
+        "is_project",
+        "project_id",
+        "project_position",
     }
 )
 LINK_FIELDS = frozenset(
@@ -89,7 +93,10 @@ def _task(row: sqlite3.Row) -> Task:
         description=row["description"],
         next_action=row["next_action"],
         kind=Kind(row["kind"]) if row["kind"] else None,
-        project=row["project"],
+        area=row["area"],
+        is_project=bool(row["is_project"]),
+        project_id=row["project_id"],
+        project_position=row["project_position"],
         priority=Priority(row["priority"]),
         due=date.fromisoformat(row["due"]) if row["due"] else None,
         due_hint=row["due_hint"],
@@ -121,6 +128,10 @@ def _link(row: sqlite3.Row) -> Link:
         stack_position=row["stack_position"],
         role_fixed=bool(row["role_fixed"]),
     )
+
+
+def _ref(row: sqlite3.Row) -> TaskRef:
+    return TaskRef(row["id"], row["title"], State(row["state"]))
 
 
 def _followup(row: sqlite3.Row) -> Followup:
@@ -166,6 +177,25 @@ def _attach(conn: sqlite3.Connection, tasks: list[Task], *, entries: bool = Fals
     for row in conn.execute(f"SELECT * FROM followup WHERE task_id IN ({marks}) ORDER BY id", ids):
         by_id[row["task_id"]].followups.append(_followup(row))
     for row in conn.execute(
+        "SELECT b.task_id, t.id, t.title, t.state FROM blocker b "
+        "JOIN task t ON t.id = b.blocked_by "
+        f"WHERE b.task_id IN ({marks}) ORDER BY t.project_position, t.id",
+        ids,
+    ):
+        by_id[row["task_id"]].blockers.append(_ref(row))
+    project_ids = {t.project_id for t in tasks if t.project_id is not None}
+    if project_ids:
+        pmarks = ",".join("?" * len(project_ids))
+        refs = {
+            row["id"]: _ref(row)
+            for row in conn.execute(
+                f"SELECT id, title, state FROM task WHERE id IN ({pmarks})", list(project_ids)
+            )
+        }
+        for task in tasks:
+            if task.project_id is not None:
+                task.project = refs.get(task.project_id)
+    for row in conn.execute(
         f"SELECT task_id, name FROM person WHERE task_id IN ({marks}) ORDER BY rowid", ids
     ):
         by_id[row["task_id"]].people.append(row["name"])
@@ -195,18 +225,27 @@ def tasks(
     conn: sqlite3.Connection,
     states: Iterable[State] | None = None,
     *,
-    project: str | None = None,
+    area: str | None = None,
     kind: Kind | None = None,
     person: str | Sequence[str] | None = None,
+    projects: bool | None = None,
+    project_id: int | None = None,
 ) -> list[Task]:
+    """Tasks, filtered. `projects` True gives only projects, False only tasks, None both."""
     where, params = [], []
     if states is not None:
         wanted = list(states)
         where.append(f"state IN ({','.join('?' * len(wanted))})")
         params += [s.value for s in wanted]
-    if project:
-        where.append("project = ? COLLATE NOCASE")
-        params.append(project)
+    if area:
+        where.append("area = ? COLLATE NOCASE")
+        params.append(area)
+    if projects is not None:
+        where.append("is_project = ?")
+        params.append(int(projects))
+    if project_id is not None:
+        where.append("project_id = ?")
+        params.append(project_id)
     if kind:
         where.append("kind = ?")
         params.append(kind.value)
@@ -228,16 +267,32 @@ def tasks(
     sql = "SELECT * FROM task"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    rows = conn.execute(sql + " ORDER BY id", params).fetchall()
+    order = " ORDER BY project_position, id" if project_id is not None else " ORDER BY id"
+    rows = conn.execute(sql + order, params).fetchall()
     return _attach(conn, [_task(r) for r in rows])
 
 
-def projects(conn: sqlite3.Connection) -> list[str]:
+def areas(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
-        "SELECT project, count(*) AS n FROM task WHERE project IS NOT NULL "
-        "GROUP BY project COLLATE NOCASE ORDER BY n DESC, project"
+        "SELECT area, count(*) AS n FROM task WHERE area IS NOT NULL "
+        "GROUP BY area COLLATE NOCASE ORDER BY n DESC, area"
     )
-    return [r["project"] for r in rows]
+    return [r["area"] for r in rows]
+
+
+def project_tasks(conn: sqlite3.Connection, project_id: int) -> list[Task]:
+    """A project's tasks, in order."""
+    return tasks(conn, project_id=project_id)
+
+
+def dependents(conn: sqlite3.Connection, task_id: int) -> list[Task]:
+    """Tasks waiting on this one."""
+    rows = conn.execute(
+        "SELECT t.* FROM task t JOIN blocker b ON b.task_id = t.id WHERE b.blocked_by = ? "
+        "ORDER BY t.project_position, t.id",
+        (task_id,),
+    ).fetchall()
+    return _attach(conn, [_task(r) for r in rows])
 
 
 def open_followups(conn: sqlite3.Connection) -> list[Followup]:
@@ -414,18 +469,97 @@ def move(
     )
 
 
+def insert_task(conn: sqlite3.Connection, task: Task) -> int:
+    """Save a new task's own fields and links (inside the caller's transaction)."""
+    cur = conn.execute(
+        "INSERT INTO task (title, description, state, is_project, project_id, project_position) "
+        "VALUES (?,?,?,?,?,?)",
+        (
+            task.title,
+            task.description,
+            task.state.value,
+            task.is_project,
+            task.project_id,
+            task.project_position,
+        ),
+    )
+    assert cur.lastrowid is not None
+    task.id = cur.lastrowid
+    insert_links(conn, task.id, task.links)
+    return task.id
+
+
 def add(conn: sqlite3.Connection, task: Task) -> int:
     """Save a newly captured task with its links. Returns its id."""
     with tx(conn):
-        cur = conn.execute(
-            "INSERT INTO task (title, description, state) VALUES (?,?,?)",
-            (task.title, task.description, task.state.value),
-        )
-        assert cur.lastrowid is not None
-        task.id = cur.lastrowid
-        insert_links(conn, task.id, task.links)
+        insert_task(conn, task)
+        assert task.id is not None
         log(conn, task.id, EntryKind.NOTE, "Captured")
     return task.id
+
+
+def next_position(conn: sqlite3.Connection, project_id: int) -> int:
+    row = conn.execute(
+        "SELECT coalesce(max(project_position), 0) FROM task WHERE project_id = ?", (project_id,)
+    ).fetchone()
+    return int(row[0]) + 1
+
+
+def waits_on(conn: sqlite3.Connection, task_id: int, other: int) -> bool:
+    """Whether `task_id` already waits on `other`, directly or through other tasks."""
+    seen, frontier = set(), [task_id]
+    while frontier:
+        current = frontier.pop()
+        if current == other:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        frontier += [
+            r["blocked_by"]
+            for r in conn.execute("SELECT blocked_by FROM blocker WHERE task_id = ?", (current,))
+        ]
+    return False
+
+
+def add_blocker(conn: sqlite3.Connection, task_id: int, blocked_by: int) -> None:
+    """`task_id` can't start until `blocked_by` is done (inside the caller's transaction)."""
+    if task_id == blocked_by:
+        raise ToddError(f"#{task_id} can't wait on itself.")
+    if waits_on(conn, blocked_by, task_id):
+        raise ToddError(
+            f"#{blocked_by} already waits on #{task_id}, so #{task_id} can't wait on it too."
+        )
+    conn.execute(
+        "INSERT OR IGNORE INTO blocker (task_id, blocked_by) VALUES (?,?)", (task_id, blocked_by)
+    )
+
+
+def remove_blockers(conn: sqlite3.Connection, task_id: int, blocked_by: int | None = None) -> int:
+    """Stop `task_id` waiting on `blocked_by` (or on anything). Returns how many were removed."""
+    if blocked_by is None:
+        cur = conn.execute("DELETE FROM blocker WHERE task_id = ?", (task_id,))
+    else:
+        cur = conn.execute(
+            "DELETE FROM blocker WHERE task_id = ? AND blocked_by = ?", (task_id, blocked_by)
+        )
+    return cur.rowcount
+
+
+def move_links(conn: sqlite3.Connection, link_ids: Sequence[int], task_id: int) -> None:
+    """Hand links (and their reviewers) to another task, after any it already has.
+    Inside the caller's transaction."""
+    start = conn.execute(
+        "SELECT coalesce(max(position), 0) FROM link WHERE task_id = ?", (task_id,)
+    ).fetchone()[0]
+    # Negative positions first, so UNIQUE (task_id, position) never sees a clash mid-way.
+    for i, link_id in enumerate(link_ids, start + 1):
+        conn.execute(
+            "UPDATE link SET task_id = ?, position = ? WHERE id = ?", (task_id, -i, link_id)
+        )
+    conn.execute(
+        "UPDATE link SET position = -position WHERE task_id = ? AND position < 0", (task_id,)
+    )
 
 
 def update(conn: sqlite3.Connection, task_id: int, **fields: Any) -> None:

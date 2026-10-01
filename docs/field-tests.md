@@ -73,7 +73,7 @@ When todd asks, paste the Slack message and press Ctrl-D.
 
 - [ ] The ticket line shows ✓ with the right summary and status.
 - [ ] The Slack line says "message text kept".
-- [ ] The filed card makes sense: title, next step, kind, project, priority, due date, people.
+- [ ] The filed card makes sense: title, next step, kind, area, priority, due date, people.
       Note anything Claude gets consistently wrong; that's prompt tuning.
 - [ ] `todd show <n>` shows the message under its link, with who wrote it.
 - [ ] `todd add -e` opens your editor and captures what you write.
@@ -135,7 +135,20 @@ Try each with real links, and note anything Claude gets wrong.
 - [ ] `todd add "I need to address" <slack> "and tell Mary S when I'm done"`, without pasting:
       todd asks you for a title instead of inventing one.
 
-## 9. Moving, links and Jira failures
+## 9. Projects
+
+- [ ] Describe a chain in one capture, with a ticket per part, the way you would naturally:
+      `todd add "Waiting on reviews for this stack" <PR> <KEY> "then a bug bash" <KEY> "then
+      configure the live feature for <customer>" <KEY>`. Claude makes one project with a task
+      per part, in order, each with the right ticket (the stack goes with the first).
+- [ ] `todd` shows only the first task (with the project's name); the footer counts the blocked
+      ones; `todd projects` and `todd show <project>` show all three, in order.
+- [ ] `todd done <first>` says what it unblocked, and the next task appears in `todd`.
+- [ ] Finishing the last task asks whether the project is done, starting on No. Answering No
+      puts "needs a next task" in `todd` until `todd add "…" --in <project>`.
+- [ ] A single task is still a single task: Claude doesn't invent tasks of its own.
+
+## 10. Moving, links and Jira failures
 
 - [ ] `todd move <n> <state>` works from any state to any other. `--no-jira` leaves the ticket.
 - [ ] Map a state to a status your workflow can't reach and move a task there. todd says it
@@ -143,7 +156,7 @@ Try each with real links, and note anything Claude gets wrong.
 - [ ] `todd links <n>`: can you ⌘-click every line, including long URLs?
 - [ ] `todd refresh`: statuses and reviewers catch up with what changed in Jira and GitHub.
 
-## 10. Nicknames
+## 11. Nicknames
 
 ```sh
 todd nick <a colleague's login> <what you call them>

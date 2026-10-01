@@ -264,13 +264,13 @@ def test_repeating_a_state_is_a_no_op(filed):
 
 
 def test_edit_corrects_the_filing(filed):
-    result = todd("edit", "1", "--due", "fri", "--priority", "urgent", "--project", "none")
+    result = todd("edit", "1", "--due", "fri", "--priority", "urgent", "--area", "none")
     assert result.exit_code == 0, result.output
     task = saved()
     assert task.due is not None and task.due.isoformat() == "2026-10-02"
     assert task.priority.value == "urgent"
-    assert task.project is None
-    assert task.entries[-1].text == "Edited project, priority, due"
+    assert task.area is None
+    assert task.entries[-1].text == "Edited area, priority, due"
 
 
 def test_edit_rejects_a_bad_date(filed):
@@ -301,7 +301,7 @@ def test_unknown_task(shell):
 
 
 def test_filters(filed):
-    assert "#1" in todd("ls", "--project", "platform").output
+    assert "#1" in todd("ls", "--area", "platform").output
     assert "Nothing on your list." in todd("ls", "--kind", "review").output
     todd("done", "1", "--local")
     assert "#1" not in todd().output

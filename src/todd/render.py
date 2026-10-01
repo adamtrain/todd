@@ -54,6 +54,7 @@ STATE_COLORS = {
     State.FOLLOWING: "#5fa8d3",
 }
 FOLLOWUP = "#e8a0bf"
+PROJECT = "#d7a65f"
 
 # The order sections appear in the queue: what you're on, then what's next, then what's stuck.
 QUEUE_ORDER = [State.DOING, State.IN_REVIEW, State.TODO, State.WAITING, State.INBOX]
@@ -291,11 +292,11 @@ def _second_line(task: Task, names: Nicknames) -> Text | None:
 
 def queue_columns(w: int) -> list[str]:
     """Which queue columns fit: the task itself always gets at least ~36 characters."""
-    columns = ["id", "mark", "task", "kind", "project", "due", "links", "age"]
+    columns = ["id", "mark", "task", "kind", "area", "due", "links", "age"]
     if w < 120:
         columns.remove("kind")
     if w < 100:
-        columns.remove("project")
+        columns.remove("area")
     if w < 70:
         columns.remove("links")
     return columns
@@ -311,7 +312,7 @@ def _queue_table(
         "mark": {"no_wrap": True, "width": 1},
         "task": {"ratio": 1},
         "kind": {"no_wrap": True, "width": 10, "style": FAINT},
-        "project": {"no_wrap": True, "width": 12, "overflow": "ellipsis"},
+        "area": {"no_wrap": True, "width": 12, "overflow": "ellipsis"},
         "due": {"no_wrap": True, "width": 11},
         "links": {"no_wrap": True, "width": 18 if w >= 100 else 16, "overflow": "ellipsis"},
         "age": {"no_wrap": True, "width": 4, "justify": "right", "style": FAINT},
@@ -324,6 +325,9 @@ def _queue_table(
         title = Text(task.title, style="strike " + FAINT if task.state == State.DROPPED else "")
         if closed and task.state != State.DROPPED:
             title.stylize(FAINT)
+        if task.project:
+            name = task.project.title
+            title.append(f"  ▸ {name if len(name) <= 28 else name[:27] + '…'}", style=PROJECT)
         body: RenderableType = title
         if (second := _second_line(task, names)) is not None:
             body = Group(title, second)
@@ -332,7 +336,7 @@ def _queue_table(
             "mark": Text(mark, style=mark_style),
             "task": body,
             "kind": task.kind.label if task.kind else "",
-            "project": Text(task.project or "", style=FAINT if closed else ""),
+            "area": Text(task.area or "", style=FAINT if closed else ""),
             "due": due_text(task.due if not closed else None, today),
             "links": link_badges(task),
             "age": ago(task.state_at, now),
@@ -364,8 +368,11 @@ def queue(
     closed: bool = False,
     due: list[tuple[Followup, Task]] | None = None,
     following: int = 0,
+    blocked: int = 0,
+    stalled: list[Task] | None = None,
     names: Nicknames = NO_NAMES,
 ) -> None:
+    """The queue. `stalled` are projects with nothing open left: each needs a next task."""
     w = width(console)
     order = QUEUE_ORDER + (CLOSED_ORDER if closed else [])
     groups = {
@@ -379,7 +386,26 @@ def queue(
             )
         )
         console.print(_due_followups(due, today, w))
-    if not any(groups.values()) and not due:
+    if stalled:
+        console.print()
+        console.print(
+            Text.assemble(
+                ("▸ ", PROJECT),
+                ("Projects needing a next task", f"bold {PROJECT}"),
+                (f" {len(stalled)}", FAINT),
+            )
+        )
+        for project in stalled:
+            console.print(
+                Text.assemble(
+                    (f"{'#' + str(project.id):>5} ", FAINT),
+                    project.title,
+                    ("   add one: ", FAINT),
+                    (f'todd add "…" --in {project.id}', f"{FAINT} bold"),
+                ),
+                width=w,
+            )
+    if not any(groups.values()) and not due and not stalled:
         console.print()
         console.print(Text("Nothing on your list.", style="bold"))
         console.print(
@@ -422,6 +448,10 @@ def queue(
         if i:
             footer.append(" · ", style=FAINT)
         footer.append_text(part)
+    if blocked:
+        footer.append("   ")
+        footer.append(f"{blocked} blocked", style=PROJECT)
+        footer.append(" (todd projects)", style=FAINT)
     if following:
         footer.append("   ")
         footer.append(f"{following} following", style=STATE_COLORS[State.FOLLOWING])
@@ -514,12 +544,12 @@ def followups(console: Console, items: list[tuple[Followup, Task]], *, today: da
 
 
 def facts(task: Task, today: date) -> Text:
-    """kind · project · priority · due, whichever are known."""
+    """kind · area · priority · due, whichever are known."""
     parts: list[Text] = []
     if task.kind:
         parts.append(Text(task.kind.label))
-    if task.project:
-        parts.append(Text(task.project, style=ACCENT))
+    if task.area:
+        parts.append(Text(task.area, style=ACCENT))
     if task.priority != Priority.NORMAL:
         mark, style = PRIORITY_MARKS[task.priority]
         parts.append(Text(f"{mark} {task.priority.value}".strip(), style=style))
@@ -543,14 +573,31 @@ def facts(task: Task, today: date) -> Text:
 
 def card(task: Task, today: date, w: int, names: Nicknames = NO_NAMES) -> Panel:
     color = STATE_COLORS[task.state]
-    rows: list[RenderableType] = [
-        Text.assemble(state_badge(task.state), "  ", (task.title, "bold"))
-    ]
+    badge = state_badge(task.state)
+    if task.is_project:
+        badge = Text.assemble((" PROJECT ", f"bold #111111 on {PROJECT}"), " ", badge)
+    rows: list[RenderableType] = [Text.assemble(badge, "  ", (task.title, "bold"))]
     if task.needs_title:
         rows.append(
             Text.assemble(
                 ("Claude couldn't tell what this is. Name it: ", WARN),
                 (f'todd edit {task.id} -t "…"', "bold"),
+            )
+        )
+    if task.project:
+        position = f"task {task.project_position} of " if task.project_position else ""
+        rows.append(
+            Text.assemble(
+                ("▸ ", PROJECT),
+                (position, FAINT),
+                (f"#{task.project.id} {task.project.title}", PROJECT),
+            )
+        )
+    if task.open_blockers:
+        rows.append(
+            Text(
+                "Blocked by " + ", ".join(f"#{b.id} {b.title}" for b in task.open_blockers),
+                style=PROJECT,
             )
         )
     if task.state == State.WAITING and (who := waiting_summary(task, names)):
@@ -672,6 +719,100 @@ def stack_header(key: str, members: list[Link]) -> Text:
     )
 
 
+def task_mark(task: Task) -> Text:
+    """One character for where a task in a project stands."""
+    if task.state == State.DONE:
+        return Text("✓", style=OK)
+    if task.state == State.DROPPED:
+        return Text("✗", style=FAINT)
+    if task.blocked:
+        return Text("◌", style=FAINT)
+    return Text("●", style=STATE_COLORS[task.state])
+
+
+def project_tasks(tasks: list[Task], today: date, w: int, names: Nicknames = NO_NAMES) -> Table:
+    """A project's tasks in order: each one's state, and what it's waiting on."""
+    table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1), width=w, expand=True)
+    table.add_column(justify="right", style=FAINT, no_wrap=True, width=2)
+    table.add_column(no_wrap=True, width=1)
+    table.add_column(style=FAINT, no_wrap=True)
+    table.add_column(ratio=1)
+    table.add_column(no_wrap=True, width=9)
+    table.add_column(no_wrap=True, width=22, overflow="ellipsis")
+    for task in tasks:
+        title = Text(task.title, style=FAINT if task.state.closed else "")
+        if task.state == State.DROPPED:
+            title.stylize("strike")
+        detail: Text | None = None
+        if task.blocked:
+            detail = Text(
+                "blocked by " + ", ".join(f"#{b.id}" for b in task.open_blockers), style=FAINT
+            )
+        elif task.state == State.WAITING and (who := waiting_summary(task, names)):
+            detail = Text(f"waiting on reviews from {who}", style=WARN)
+        elif task.state == State.WAITING and task.waiting_on:
+            detail = Text(f"waiting on {task.waiting_on}", style=WARN)
+        elif task.next_action and not task.state.closed:
+            detail = Text(f"→ {task.next_action}", style=FAINT, no_wrap=True, overflow="ellipsis")
+        body: RenderableType = Group(title, detail) if detail is not None else title
+        state = "blocked" if task.blocked else task.state.label
+        table.add_row(
+            str(task.project_position or ""),
+            task_mark(task),
+            f"#{task.id}",
+            body,
+            Text(state, style=FAINT),
+            link_badges(task),
+        )
+    return table
+
+
+def progress(tasks: list[Task]) -> str:
+    open_ = sum(1 for t in tasks if not t.state.closed)
+    if not tasks:
+        return "no tasks yet"
+    return f"{open_} of {plural(len(tasks), 'task')} open"
+
+
+def projects(
+    console: Console,
+    items: list[tuple[Task, list[Task]]],
+    *,
+    today: date,
+    names: Nicknames = NO_NAMES,
+) -> None:
+    """Every project with its tasks."""
+    w = width(console)
+    console.print()
+    if not items:
+        console.print(Text("No projects.", style="bold"))
+        console.print(
+            Text.assemble(
+                ("Describe the chain and Claude makes one: ", FAINT),
+                (
+                    'todd add "waiting on review for <PR>; then a bug bash; then …"',
+                    f"bold {ACCENT}",
+                ),
+            )
+        )
+        console.print()
+        return
+    for project, tasks in items:
+        head = Text.assemble(
+            ("▸ ", PROJECT), (f"#{project.id} ", FAINT), (project.title, f"bold {PROJECT}")
+        )
+        head.append(f"  {progress(tasks)}", style=FAINT)
+        if project.state.closed:
+            head.append(f" · {project.state.label}", style=FAINT)
+        elif not any(not t.state.closed for t in tasks):
+            head.append("  needs a next task: ", style=WARN)
+            head.append(f'todd add "…" --in {project.id}', style=f"{FAINT} bold")
+        console.print(head, width=w)
+        if tasks:
+            console.print(Padding(project_tasks(tasks, today, w - 2, names), (0, 0, 0, 2)), width=w)
+        console.print()
+
+
 def show(
     console: Console,
     task: Task,
@@ -679,10 +820,24 @@ def show(
     today: date,
     brief: bool = False,
     names: Nicknames = NO_NAMES,
+    tasks: list[Task] | None = None,
 ) -> None:
+    """One task, or a project (with `tasks`, its tasks)."""
     w = width(console)
     console.print()
     console.print(card(task, today, w, names))
+    if task.is_project:
+        console.print()
+        console.print(section(f"Tasks · {progress(tasks or [])}", w, PROJECT), width=w)
+        if tasks:
+            console.print(Padding(project_tasks(tasks, today, w - 2, names), (0, 0, 0, 2)), width=w)
+        else:
+            console.print(
+                Text.assemble(
+                    ("    No tasks yet. Add one: ", FAINT), (f'todd add "…" --in {task.id}', "bold")
+                ),
+                width=w,
+            )
     if task.description and task.description.strip() != task.title.strip():
         console.print()
         console.print(section("As you wrote it", w), width=w)

@@ -18,8 +18,12 @@
   Links and Jira keys can go anywhere in the arguments.
 - **Claude files it.** todd reads what it can first: Jira tickets through `acli`, pull requests
   through `gh`. Then one Claude call fills in the title, the next concrete step, the kind of work,
-  the project, the priority, any due date ("before Thursday's sync" becomes a date), the people
-  involved, and what each link is for.
+  its area (platform, hiring…), the priority, any due date ("before Thursday's sync" becomes a
+  date), the people involved, and what each link is for.
+- **Projects, not just tasks.** Describe a chain ("waiting on review for this stack; once it's
+  in, a bug bash, then configure the feature for Acme") and Claude files a project with a task
+  for each part, in order, each with its own ticket. Later tasks wait, out of your queue, until
+  the ones before them are done. A project with nothing open left asks for its next task.
 - **Slack without a Slack app.** todd can't read Slack, so it asks you to paste the message. The
   text is kept with that link and marked as *that* message, so the context survives even if the
   link goes missing.
@@ -121,17 +125,21 @@ Other commands:
 
 | Command | What it does |
 | --- | --- |
-| `todd ls [--all] [-p project] [-k kind] [--person name]` | The queue, filtered. `--all` includes done and dropped. |
+| `todd ls [--all] [--area name] [-k kind] [--person name]` | The queue, filtered. `--all` includes done and dropped. |
 | `todd triage [id]` | File a task again (say, after adding links), or everything still in your inbox. |
 | `todd link 12 <links…> [-q text]` | Attach more links. |
 | `todd note 12 <text>` | Add to the timeline. |
-| `todd edit 12 --due fri --priority high --project none …` | Correct what Claude filed. |
+| `todd edit 12 --due fri --priority high --area none --in 7 …` | Correct what Claude filed; `--in` moves it into project #7 (or `none`). |
 | `todd sync 12` | Bring the Jira ticket in line with the task's state. |
 | `todd refresh [id]` | Re-read tickets and pull requests (statuses, reviewers, stacks) without asking Claude. |
 | `todd role 12 3 reply` | Say what link 3 is for. `reply` marks where you'll reply; refiling keeps it. |
 | `todd links 12 [--labels]` | Print the links bare, one per line, so your terminal can make them clickable. |
 | `todd followup add 12 "Tell Theo" [--to Theo] [--on fri \| --when done] [--unless in_review]` | Add a follow-up yourself. |
 | `todd followup done\|drop\|snooze N` | Close a follow-up (↪N), or move it to another day (`snooze 4 +7`). |
+| `todd projects [--all]` | Every project, with its tasks in order and what's blocking what. |
+| `todd add "…" --in 7 [--after 14,15 \| none]` | Add a task to project #7. By default it waits on the project's last open task. |
+| `todd add --project "…"` | Capture something as a project even before its tasks are clear. |
+| `todd block 16 --on 15` / `todd unblock 16 [--on 15]` | Say a task can't start until another is done, or stop it waiting. |
 | `todd nick [login] [name…] [--remove]` | List, set or forget nicknames. |
 | `todd config [--init] [--edit]` | Where todd keeps things, and what it's set to do. |
 | `todd doctor [--claude] [--jira KEY] [--pr URL]` | Check the tools todd uses, and what it makes of a real ticket or PR. |
@@ -156,6 +164,35 @@ PLAT-412
 
 Slack links you capture are context by default. Say where you'll need to reply with
 `--reply-in <link>` when you add the task, or `todd role 12 3 reply` afterwards.
+
+### Projects
+
+A project is work you move forward through several tasks. Describe the chain in one capture,
+and Claude files the project and its tasks:
+
+```sh
+todd add "Waiting on reviews for this stack" <PR url> PLAT-101 \
+  "as soon as that's done, a bug bash" PLAT-102 "then configure the live feature for Acme" PLAT-103
+```
+
+```text
+▸ #1 Launch the live feature for Acme  3 of 3 tasks open
+   1  ●  #2  Get the cluster-b stack reviewed and merged     waiting    PLAT-101 · stack of 3
+             waiting on reviews from Nik (2), Will M
+   2  ◌  #3  Set up the bug bash (PLAT-102)                   blocked    PLAT-102
+             blocked by #2
+   3  ◌  #4  Configure the live feature for Acme (PLAT-103)   blocked    PLAT-103
+             blocked by #3
+```
+
+Each task keeps its own links, so its own Jira ticket moves (after asking) when it does. A
+blocked task waits under its project, out of your queue; the queue footer counts them. When you
+finish or drop the task in its way, todd tells you what that unblocked. When a project's last
+open task is done, todd asks whether the project is done too (the highlight starts on No). If
+not, the project shows in your queue as needing a next task until you add one with `--in`.
+
+A project can start with no tasks at all (`todd add --project "Acme launch"`), and any task can
+be moved into one (`todd edit 16 --in 1`) or made to wait on another (`todd block 16 --on 15`).
 
 ### Follow-ups
 
@@ -220,8 +257,8 @@ done = "Done"
 in_review = ""
 done = "Closed"
 
-# Projects Claude should file tasks under.
-[projects]
+# Areas of work Claude should file tasks under.
+[areas]
 platform = "Infrastructure, CI, migrations"
 hiring = "Interviews, debriefs, hiring loops"
 ```

@@ -58,8 +58,8 @@ done = "Done"
 # check_in_days = 14                  # when to check back on something you're following,
                                       # if you didn't say
 
-# Projects Claude should file tasks under, with a hint about what belongs in each.
-[projects]
+# Areas of work Claude should file tasks under, with a hint about what belongs in each.
+[areas]
 # platform = "Infrastructure, CI, migrations"
 # hiring = "Interviews, debriefs, hiring loops"
 """
@@ -117,7 +117,7 @@ class Config:
     slack: SlackConfig = field(default_factory=SlackConfig)
     github: GitHubConfig = field(default_factory=GitHubConfig)
     following: FollowingConfig = field(default_factory=FollowingConfig)
-    projects: dict[str, str] = field(default_factory=dict)
+    areas: dict[str, str] = field(default_factory=dict)
     path: Path | None = None
     loaded: bool = False
 
@@ -184,7 +184,11 @@ def _statuses(table: Any, where: str) -> dict[State, str]:
 
 
 def parse(data: dict[str, Any]) -> Config:
-    top = _Reader(data, "top level", {"claude", "jira", "slack", "github", "following", "projects"})
+    top = _Reader(
+        data,
+        "top level",
+        {"claude", "jira", "slack", "github", "following", "areas"},
+    )
     config = Config()
 
     c = _Reader(
@@ -245,11 +249,11 @@ def parse(data: dict[str, Any]) -> Config:
         raise ToddError("[following] check_in_days should be at least 1.")
     config.following = FollowingConfig(check_in_days=days)
 
-    raw_projects = top.get("projects", dict, {})
-    for name, hint in raw_projects.items():
+    raw_areas = top.get("areas", dict, {})
+    for name, hint in raw_areas.items():
         if not isinstance(hint, str):
-            raise ToddError(f"[projects] {name} should be a short description in quotes.")
-    config.projects = {name: hint.strip() for name, hint in raw_projects.items()}
+            raise ToddError(f"[areas] {name} should be a short description in quotes.")
+    config.areas = {name: hint.strip() for name, hint in raw_areas.items()}
     return config
 
 

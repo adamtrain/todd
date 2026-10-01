@@ -56,11 +56,11 @@ def test_update_fields(conn):
         kind=Kind.REPLY,
         priority=Priority.HIGH,
         due=date(2026, 10, 1),
-        project="platform",
+        area="platform",
     )
     store.set_people(conn, task_id, ["Priya", "priya", " Sam "])
     task = store.get(conn, task_id)
-    assert (task.kind, task.priority, task.due, task.project) == (
+    assert (task.kind, task.priority, task.due, task.area) == (
         Kind.REPLY,
         Priority.HIGH,
         date(2026, 10, 1),
@@ -90,16 +90,16 @@ def test_state_changes_are_logged_and_waiting_is_forgotten_on_leaving(conn):
 def test_filters(conn):
     a = store.add(conn, _task())
     b = store.add(conn, Task(title="Review PR"))
-    store.update(conn, a, project="platform", kind=Kind.REPLY)
+    store.update(conn, a, area="platform", kind=Kind.REPLY)
     store.set_people(conn, a, ["Priya Nair"])
-    store.update(conn, b, project="hiring", kind=Kind.REVIEW)
+    store.update(conn, b, area="hiring", kind=Kind.REVIEW)
     store.set_state(conn, b, State.DONE)
     assert [t.id for t in store.tasks(conn)] == [a, b]
     assert [t.id for t in store.tasks(conn, [State.INBOX])] == [a]
-    assert [t.id for t in store.tasks(conn, project="PLATFORM")] == [a]
+    assert [t.id for t in store.tasks(conn, area="PLATFORM")] == [a]
     assert [t.id for t in store.tasks(conn, kind=Kind.REVIEW)] == [b]
     assert [t.id for t in store.tasks(conn, person="priya")] == [a]
-    assert store.projects(conn) == ["hiring", "platform"]
+    assert store.areas(conn) == ["hiring", "platform"]
     assert store.counts(conn) == {State.INBOX: 1, State.DONE: 1}
 
 

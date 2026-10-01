@@ -9,7 +9,7 @@ CREATE TABLE task (
   description TEXT NOT NULL DEFAULT '',
   next_action TEXT,
   kind        TEXT CHECK (kind IS NULL OR kind IN ('do','reply','review','decide','follow_up','investigate')),
-  project     TEXT,
+  area        TEXT,
   priority    TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
   due         TEXT CHECK (due IS NULL OR due GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   due_hint    TEXT,
@@ -17,12 +17,27 @@ CREATE TABLE task (
               CHECK (state IN ('inbox','todo','doing','waiting','in_review','done','dropped','following')),
   waiting_on  TEXT,
   needs_title INTEGER NOT NULL DEFAULT 0 CHECK (needs_title IN (0,1)),
+  -- A task can be a project, moved forward through tasks of its own; or one of those tasks,
+  -- at a position in its project.
+  is_project       INTEGER NOT NULL DEFAULT 0 CHECK (is_project IN (0,1)),
+  project_id       INTEGER REFERENCES task(id) ON DELETE SET NULL,
+  project_position INTEGER,
   triaged_at  TEXT,
   created_at  TEXT NOT NULL DEFAULT {NOW},
   updated_at  TEXT NOT NULL DEFAULT {NOW},
   state_at    TEXT NOT NULL DEFAULT {NOW}
 );
 CREATE INDEX task_state ON task(state);
+CREATE INDEX task_project ON task(project_id, project_position);
+
+-- A task can't start until the tasks blocking it are done (or dropped).
+CREATE TABLE blocker (
+  task_id    INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  blocked_by INTEGER NOT NULL REFERENCES task(id) ON DELETE CASCADE,
+  PRIMARY KEY (task_id, blocked_by),
+  CHECK (task_id <> blocked_by)
+);
+CREATE INDEX blocker_by ON blocker(blocked_by);
 
 CREATE TABLE link (
   id         INTEGER PRIMARY KEY,
