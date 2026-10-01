@@ -28,6 +28,10 @@ Try a few things the way you'd naturally say them, with your real tasks:
 - [ ] `todd "make <task> high priority and due friday"`: becomes an edit.
 - [ ] `todd "remind me to …"`: becomes a capture, with the usual filing preview.
 - [ ] Something ambiguous: Claude asks which task you mean.
+- [ ] Something that needs a result first, like `todd "add a task to <do something>, make it
+      wait on <an existing task>, and start it"`: the first plan ends with "then: …", and after
+      it runs a second plan ("Next, todd will") uses the new task's real number. You can stop
+      between the two.
 - [ ] Note anything it gets wrong; the command reference and prompt are easy to tune.
 
 ## 1. Setup
@@ -203,6 +207,21 @@ what moved.
       "Renumbered" line comes once, at the end.
 - [ ] Does the renumbering ever surprise you (say, typing two commands from one listing)? If
       so, tell me: it could wait until the next time you list things instead.
+
+## 9b. Defer dates and due dates
+
+Your database is upgraded in place the first time you run this version; nothing to reset.
+
+- [ ] `todd defer <n> mon`: the task leaves `todd`, the footer counts "1 deferred", and
+      `todd ls` shows it as deferred "until Mon". `todd defer <n> none` brings it back.
+- [ ] `todd add "<something>, not before <a date>"`: Claude sets the defer date (the preview
+      shows "Deferred until …"), separately from any deadline.
+- [ ] In a project, defer the only task that isn't blocked: `todd ls` shows the project as
+      "deferred until <date>". Defer two tasks with different dates and it shows the sooner.
+      `todd defer <project> mon` refuses and says why.
+- [ ] `todd start <a deferred task>` says "No longer deferred."
+- [ ] `todd "put the <task> off until next month"` becomes a defer.
+- [ ] Deadlines in `todd` and `todd ls` now read "due Fri", "due tomorrow", "overdue 2d".
 
 ## 10. Moving, links and Jira failures
 

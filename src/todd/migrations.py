@@ -104,7 +104,15 @@ CREATE TABLE followup (
 CREATE INDEX followup_open ON followup(status, due);
 """
 
+# A task can be deferred: until this date it's not something to act on.
+DDL_V2 = """
+ALTER TABLE task ADD COLUMN defer_until TEXT
+  CHECK (defer_until IS NULL
+         OR defer_until GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]');
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, DDL_V1),
+    (2, DDL_V2),
 ]
 LATEST_VERSION = MIGRATIONS[-1][0]

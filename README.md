@@ -16,8 +16,9 @@
 
 - **Just say it.** `todd "move the current Torii task to done and start the next one"`. Claude
   works out which todd commands you mean, using your actual tasks, and shows you the plan. Enter
-  runs it, with every command's usual questions (like the one before changing Jira). You don't
-  have to remember any commands; they're all still there for scripts.
+  runs it, with every command's usual questions (like the one before changing Jira). It takes as
+  many commands as the job needs, coming back for more when later ones depend on earlier ones.
+  You don't have to remember any commands; they're all still there for scripts.
 - **Capture in one line.** `todd add "reply to Priya about the Q3 numbers" <slack link> PLAT-412`.
   Links and Jira keys can go anywhere in the arguments.
 - **Claude files it.** todd reads what it can first: Jira tickets through `acli`, pull requests
@@ -29,6 +30,8 @@
   your inbox.
 - **What you can act on, and nothing else.** `todd` shows what you're doing, what's next and
   not blocked, and follow-ups that are due. `todd ls` shows everything open, by project.
+- **Not yet.** `todd defer 12 mon` puts a task off until a date. Until then it's out of `todd`,
+  and a project whose only startable tasks are deferred is deferred with them.
 - **Projects, not just tasks.** Describe a chain ("waiting on review for this stack; once it's
   in, a bug bash, then configure the feature for Acme") and Claude files a project with a task
   for each part, each with its own ticket. Tasks wait on whichever others they need: one after
@@ -115,6 +118,25 @@ you mean, it asks. Quotes are optional (`todd show me what's waiting on Nik` wor
 that isn't a valid command line goes to Claude. Without a terminal to ask in, a plan that changes
 things needs `todd do -y "…"`.
 
+Some requests can't be planned in one go, because a later command needs something an earlier
+one produces, like the number a new task gets. Then Claude gives the commands it can, says what
+it will do after them, and todd comes back to it once they've run:
+
+```text
+ todd will  ─────────────────────────────────────────────────────
+  1  Add a task: audit the Torii logs
+     todd add "audit the Torii logs"
+  …  then: make it wait on the runbook and start it
+
+ Next, todd will  ───────────────────────────────────────────────
+  1  Make #7 Audit the Torii logs wait on #4 Write the Torii runbook
+     todd block 7 --on 4
+  2  Start #7 Audit the Torii logs
+     todd start 7
+```
+
+You're asked about each round (the highlight starts on **Do it**), and can stop between them.
+
 Or use the commands directly:
 
 ```sh
@@ -131,6 +153,7 @@ pbpaste | todd add                     # piped text works too
 todd show 12                           # links, saved messages, reviewers, follow-ups, timeline
 todd start 12                          # doing        (Jira → In Progress)
 todd wait 12 Priya to confirm numbers  # waiting, and on what
+todd defer 12 mon                      # not before Monday: out of `todd` until then
 todd review 12                         # in review    (Jira → In Review)
 todd done 12 sent the sheet            # done         (Jira → Done, follow-ups, reply in Slack)
 todd move 12 waiting --no-jira         # any state to any other; leave Jira be this time
@@ -143,8 +166,9 @@ todd reply 12                          # where to reply, with an offer to draft 
 ### What you see
 
 `todd` (or `todd now`) is what you can act on: follow-ups that are due, what you're doing,
-what's to do and not blocked, and anything not filed yet. Each task says which project it's part
-of. What's waiting, in review, blocked or only followed is counted underneath, not listed.
+what's to do and neither blocked nor deferred, and anything not filed yet. Each task says which
+project it's part of, and a deadline says "due". What's waiting, in review, blocked, deferred
+or only followed is counted underneath, not listed.
 
 ```text
 ↪ Follow-ups due 1
@@ -152,13 +176,13 @@ of. What's waiting, in review, blocked or only followed is counted underneath, n
        #11 Write the RFC on tenant isolation
 
 ● Doing 1
-!   #7  Ship the Torii webhook  ▸ Torii webhook migration      Fri       PLAT-500      2h
+!   #7  Ship the Torii webhook  ▸ Torii webhook migration   due Fri       PLAT-500      2h
 
 ● To do 2
-!  #10  Send Priya the Q3 migration numbers                    tomorrow  PLAT-77 · Slack  1d
+!  #10  Send Priya the Q3 migration numbers                 due tomorrow  PLAT-77 · Slack  1d
     #9  Update the partner docs  ▸ Torii webhook migration                             3d
 
-Not yours to act on now: 2 waiting · 1 in review · 4 blocked · 1 following
+Not yours to act on now: 2 waiting · 1 in review · 4 blocked · 2 deferred · 1 following
 todd ls shows everything, by project
 ```
 
@@ -185,6 +209,12 @@ and wrap rather than cut anything off; when it's narrow, a task's links go under
 
 **Blocked** isn't a state: a task is blocked while any task it waits on is still open, and
 stays out of `todd now` until it's free.
+
+**Deferred** isn't a state either. `todd defer 12 mon` (or `2026-11-02`, `+14`, `next week`)
+puts a task off until that date: it's out of `todd now` until then, still in `todd ls` marked
+"deferred until Mon", and back on the day. `todd defer 12 none` stops it, and so does starting
+or finishing the task. It's separate from a due date, and a task can have both. Say it when you
+capture ("renew the contract, not before November") and Claude sets it.
 
 `todd move` goes from any state to any other, and `start`, `wait`, `review`, `done`, `drop`,
 `follow` and `reopen` are shortcuts. Each takes a note (`todd done 12 shipped it`), `-y` to
@@ -245,7 +275,8 @@ Other commands:
 | `todd triage [id]` | File a task again (say, after adding links), or everything still in your inbox. |
 | `todd link 12 <links…> [-q text]` | Attach more links. |
 | `todd note 12 <text>` | Add to the timeline. |
-| `todd edit 12 --due fri --priority high --area none --in 7 …` | Correct what Claude filed; `--in` moves it into project #7 (or `none`). |
+| `todd edit 12 --due fri --defer mon --priority high --area none --in 7 …` | Correct what Claude filed; `--in` moves it into project #7 (or `none`). |
+| `todd defer 12 mon` / `todd defer 12 none` | Put a task off until a date, or stop putting it off. |
 | `todd push 12` | Push the task's state to Jira: move its tickets to match (asking about each). |
 | `todd pull [id] [-y] [--links-only]` | Pull from Jira and GitHub: re-read the links and update the task to match (see below). |
 | `todd role 12 3 reply` | Say what link 3 is for. `reply` marks where you'll reply; refiling keeps it. |
@@ -319,11 +350,16 @@ todd add "Waiting on reviews for this stack" <PR url> PLAT-101 \
 ```
 
 **A project's state is never set by hand.** It comes from its tasks: doing if any task is under
-way; otherwise in review, to do, then waiting, among the tasks that aren't blocked; blocked when
-every open task waits on another; done when all its tasks are done. Finish the last task and
+way; otherwise in review, to do, then waiting, among the tasks that aren't blocked or deferred;
+deferred when every task that could be worked on is deferred; blocked when every open task
+waits on another; done when all its tasks are done. Finish the last task and
 todd tells you the project is done. Add a task to a finished project and it's open again. The
 one thing you do to a project itself is drop it (`todd drop 1`), which drops its open tasks
 after asking, and `todd reopen 1` brings those back.
+
+**A project is never deferred itself; its tasks are.** If the only task that could be worked on
+is deferred until Monday, the project is deferred until Monday. With several deferred tasks,
+it's deferred until the soonest of them. As soon as one task can be worked on, it isn't.
 
 **Tasks wait on whichever tasks they need.** Usually that's one after another, but several tasks
 can wait on the same one and run at the same time, one task can wait on several, and a task can

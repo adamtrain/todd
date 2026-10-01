@@ -292,6 +292,11 @@ outage, or due today. high: a near deadline, or someone important waiting. low: 
 - due: a date (YYYY-MM-DD) only when a deadline is stated or clearly implied. Resolve relative \
 dates like "Thursday" or "end of week" against today's date. Otherwise null.
 - due_hint: the words that set the deadline, briefly, like "before Thursday's sync". Null if none.
+- defer: a date (YYYY-MM-DD) before which the person doesn't want to see or start this, when \
+they say so: "not until Monday", "pick this up after the 12th", "park it for two weeks". It \
+isn't a deadline, and a task can have both. Resolve it against today's date. Otherwise null. A \
+project is never deferred itself: put the date on the task or tasks it applies to (usually the \
+first), and leave the project's own defer null.
 - people: names of the people involved other than the person themselves: who asked, who's \
 waiting, whose help is needed. Empty if none.
 - track: todo for work the person has to do. waiting when they've done their part and are \
@@ -331,8 +336,8 @@ there's nothing useful to say.
 describe the project: title names its goal ("Launch the live feature for Acme"), next_action is \
 the next thing to do in its first open task, and follow_ups are only the ones about the project \
 as a whole. Each task has title, needs_title, next_action, track (todo or waiting), waiting_on, \
-priority, due, due_hint, people and follow_ups, meaning what they mean above but for that task, \
-plus:
+priority, due, due_hint, defer, people and follow_ups, meaning what they mean above but for \
+that task, plus:
   - links: the indexes of the links that belong to that task, like its Jira ticket and its pull \
 requests. Every pull request in a stack goes with the same task, and a ticket named in a pull \
 request's title goes with that pull request's task. Links about the project as a whole (an \
@@ -376,6 +381,7 @@ _TASK_FIELDS: dict = {
     "priority": {"type": "string", "enum": [p.value for p in Priority]},
     "due": _NULLABLE_STRING,
     "due_hint": _NULLABLE_STRING,
+    "defer": _NULLABLE_STRING,
     "people": {"type": "array", "items": {"type": "string"}},
     "waiting_on": _NULLABLE_STRING,
     "follow_ups": _FOLLOW_UPS,
@@ -404,6 +410,7 @@ SCHEMA: dict = {
         "priority": {"type": "string", "enum": [p.value for p in Priority]},
         "due": _NULLABLE_STRING,
         "due_hint": _NULLABLE_STRING,
+        "defer": _NULLABLE_STRING,
         "people": {"type": "array", "items": {"type": "string"}},
         "waiting_on": _NULLABLE_STRING,
         "links": {
@@ -433,6 +440,7 @@ SCHEMA: dict = {
         "priority",
         "due",
         "due_hint",
+        "defer",
         "people",
         "waiting_on",
         "links",
@@ -613,6 +621,7 @@ class Filing:
     priority: Priority = Priority.NORMAL
     due: date | None = None
     due_hint: str | None = None
+    defer: date | None = None  # not before this date
     people: list[str] = field(default_factory=list)
     waiting_on: str | None = None
     links: dict[int, LinkVerdict] = field(default_factory=dict)
@@ -688,6 +697,7 @@ def _item(answer: dict, *, fallback_title: str, check_in: date | None) -> Filing
         priority=_enum(Priority, answer.get("priority"), Priority.NORMAL) or Priority.NORMAL,
         due=_date(answer.get("due")),
         due_hint=_text(answer.get("due_hint")),
+        defer=_date(answer.get("defer")),
         people=people,
         waiting_on=waiting_on,
     )
@@ -731,6 +741,12 @@ def parse(
             if isinstance(n, int) and 1 <= n <= len(raw) and n != i
         ]
         filing.tasks.append(task)
+    if filing.tasks and filing.defer:
+        # A project isn't deferred itself: the date belongs to the tasks that could start.
+        for task in filing.tasks:
+            if not task.after and task.defer is None:
+                task.defer = filing.defer
+        filing.defer = None
     return filing
 
 
@@ -776,6 +792,9 @@ def ask(
     elif as_project and not filing.tasks:
         filing.track = State.WAITING if filing.track == State.WAITING else State.TODO
         filing.tasks = [first_task(filing)]
+        filing.defer = None
+    if task.is_project:
+        filing.defer = None  # its tasks are deferred, never the project
     if task.project_id is not None and filing.track == State.FOLLOWING:
         # Following is for things outside projects; in one, it's simply a task to do.
         filing.track = State.TODO
@@ -793,6 +812,7 @@ def first_task(project: Filing) -> Filing:
         priority=project.priority,
         due=project.due,
         due_hint=project.due_hint,
+        defer=project.defer,
     )
 
 
@@ -866,6 +886,7 @@ def _write(conn: sqlite3.Connection, task_id: int, filing: Filing) -> None:
         priority=filing.priority,
         due=filing.due,
         due_hint=filing.due_hint,
+        defer_until=filing.defer,
         needs_title=filing.needs_title,
         triaged_at=store.now(),
     )

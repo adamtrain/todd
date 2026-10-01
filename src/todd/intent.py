@@ -133,6 +133,8 @@ def _task_line(task: Task, today: date) -> str:
         parts.append("blocked by " + ", ".join(f"#{b.id}" for b in task.open_blockers))
     if task.state == State.WAITING and task.waiting_on:
         parts.append(f"waiting on {task.waiting_on}")
+    if task.defer_until and task.deferred(today):
+        parts.append(f"deferred until {task.defer_until.isoformat()}")
     if task.due:
         parts.append(f"due {task.due:%a} {task.due.isoformat()}")
     if task.people:
@@ -152,7 +154,7 @@ def context(conn: sqlite3.Connection, today: date, names: Nicknames) -> str:
     for project in store.tasks(conn, open_states, projects=True):
         assert project.id is not None
         tasks = store.project_tasks(conn, project.id)
-        where = standing(project, tasks)
+        where = standing(project, tasks, today)
         if where.state is None or not where.state.closed:
             projects.append((project, tasks, where))
     if projects:
@@ -161,8 +163,9 @@ def context(conn: sqlite3.Connection, today: date, names: Nicknames) -> str:
             order = ", ".join(
                 f"#{t.id} ({'blocked' if t.blocked else t.state.label})" for t in tasks
             )
+            label = where.label + (f" until {where.until.isoformat()}" if where.until else "")
             lines.append(
-                f"#{project.id} [project · {where.label}] {project.title} · tasks in order: {order}"
+                f"#{project.id} [project · {label}] {project.title} · tasks in order: {order}"
             )
     tasks = store.tasks(conn, open_states, projects=False)
     if tasks:
@@ -193,7 +196,7 @@ def context(conn: sqlite3.Connection, today: date, names: Nicknames) -> str:
 SYSTEM = """\
 You turn what a person says into todd commands. todd is their work to-do list. You get every \
 command todd has, the person's current tasks, and their request. Answer with the todd commands \
-that do what they asked, in order.
+that do what they asked, in order: as many steps as it takes to do all of it.
 
 Each step is the list of words that follow `todd` on the command line (argv), split the way a \
 shell would split them, and says: a short plain description that names each task by number and \
@@ -214,6 +217,16 @@ how blocking and following work, is in <states>.
 - What a task waits on is set with block and unblock: tasks usually follow one another, but \
 several can wait on the same task, or on nothing, when they can go on at the same time.
 - Changes to a task's details use edit with the matching options.
+- todd runs your steps one after another, but you write them all at once, so a step can't use \
+something an earlier step will only produce when it runs, like the number of a task that add \
+is about to create. When the request needs that ("add a task for the audit, make it wait on \
+the runbook, and start it"), give the steps you can give now, and say in then, in a few plain \
+words, what you'll do once they've run ("make it wait on #3 and start it"). todd runs your \
+steps and comes back to you with what was run and the tasks as they are then, and you give the \
+rest. When your steps finish the job, then is null.
+- Deferring a task (defer, or edit --defer) keeps it out of what they can act on until a date. \
+Dates in options are YYYY-MM-DD, or words todd knows: today, tomorrow, a weekday like fri, +7, \
+next week, none.
 - Don't add -y, --no-jira or --local unless the person asked to skip questions or leave Jira \
 alone: todd asks before changing Jira, and they want that.
 - Questions about their work are answered by commands that show it: now (what they can act \
@@ -242,8 +255,9 @@ SCHEMA: dict = {
             },
         },
         "question": {"type": ["string", "null"]},
+        "then": {"type": ["string", "null"]},
     },
-    "required": ["steps", "question"],
+    "required": ["steps", "question", "then"],
     "additionalProperties": False,
 }
 
@@ -277,6 +291,7 @@ def _quote(word: str) -> str:
 class Plan:
     steps: list[Step] = field(default_factory=list)
     question: str | None = None
+    then: str | None = None  # what's left to do once these steps have run, if anything
     answer: dict = field(default_factory=dict)
 
     @property
@@ -293,6 +308,12 @@ class Conversation:
     previous: Plan | None = None
     changes: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)  # lines of the last plan that didn't parse
+    ran: list[Step] = field(default_factory=list)  # steps already run for this request
+    promised: str | None = None  # what Claude said it would do after those
+
+    def after(self, plan: Plan) -> Conversation:
+        """The conversation once `plan` has run and Claude is asked for the rest."""
+        return Conversation(self.request, ran=[*self.ran, *plan.steps], promised=plan.then)
 
 
 def prompt(conversation: Conversation, *, commands: str, tasks: str, today: date) -> str:
@@ -313,6 +334,17 @@ def prompt(conversation: Conversation, *, commands: str, tasks: str, today: date
         "",
         f"<request>{conversation.request}</request>",
     ]
+    if conversation.ran:
+        parts += ["", "<done>", "These steps have already been run for this request, in order:"]
+        parts += [f"- {step.command_line} ({step.says})" for step in conversation.ran]
+        parts += [
+            "</done>",
+            "<tasks> shows everything as it is now, after those steps, with the numbers things "
+            "have now.",
+        ]
+        if conversation.promised:
+            parts.append(f"You said you would then: {conversation.promised}")
+        parts.append("Give the steps that are left. If nothing is left, give no steps.")
     for question, answer in conversation.exchanges:
         parts += [f"You asked: {question}", f"<answer>{answer}</answer>"]
     if conversation.previous is not None and (conversation.changes or conversation.problems):
@@ -342,10 +374,11 @@ def parse(answer: dict) -> Plan:
             argv = argv[1:]
         if argv:
             steps.append(Step(argv, str(item.get("says") or " ".join(argv)).strip()))
-    question = answer.get("question")
+    question, then = answer.get("question"), answer.get("then")
     return Plan(
         steps=steps,
         question=question.strip() or None if isinstance(question, str) else None,
+        then=(then.strip() or None) if isinstance(then, str) and steps else None,
         answer=answer,
     )
 
@@ -380,6 +413,8 @@ def understand(
             previous=plan,
             changes=list(conversation.changes),
             problems=problems,
+            ran=conversation.ran,
+            promised=conversation.promised,
         )
         plan = parse(
             claude.structured(

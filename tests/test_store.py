@@ -5,6 +5,7 @@ import pytest
 
 from todd import db, store
 from todd.errors import ToddError
+from todd.migrations import LATEST_VERSION, MIGRATIONS
 from todd.models import EntryKind, Link, LinkKind, Priority, Role, State, Task
 
 from .conftest import SLACK_DM
@@ -26,8 +27,26 @@ def _task(**kw) -> Task:
 
 
 def test_migrates_a_new_database(conn):
-    assert db.current_version(conn) == 1
-    assert db.migrate(conn) == 1  # idempotent
+    assert db.current_version(conn) == LATEST_VERSION
+    assert db.migrate(conn) == LATEST_VERSION  # idempotent
+
+
+def test_an_older_database_is_brought_up_to_date_with_its_tasks(tmp_path):
+    path = tmp_path / "old.sqlite"
+    old = sqlite3.connect(path, isolation_level=None)
+    old.executescript(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);"
+        + MIGRATIONS[0][1]
+        + "INSERT INTO schema_version VALUES (1, 'then');"
+        "INSERT INTO task (title, state) VALUES ('from before', 'todo');"
+    )
+    old.close()
+    conn = db.connect(path)
+    assert db.current_version(conn) == LATEST_VERSION
+    task = store.get(conn, 1)
+    assert (task.title, task.state, task.defer_until) == ("from before", State.TODO, None)
+    store.update(conn, 1, defer_until=date(2026, 10, 12))
+    assert store.get(conn, 1).defer_until == date(2026, 10, 12)
 
 
 def test_add_and_get_round_trip(conn):

@@ -8,7 +8,7 @@ from todd import cli, db, store, triage
 from todd.errors import ToddError
 from todd.models import State, Task, TaskRef, standing
 
-from .conftest import PR_URL, SLACK_DM, answer, load
+from .conftest import PR_URL, SLACK_DM, TODAY, answer, load
 from .test_cli import named, saved, todd
 
 TITLES = [
@@ -461,9 +461,9 @@ def test_standing(states, blocked, expected):
         Task(f"t{i}", state=state, blockers=[TaskRef(99, "x", State.TODO)] if i in blocked else [])
         for i, state in enumerate(states)
     ]
-    assert standing(Task("p", is_project=True), tasks).label == expected
+    assert standing(Task("p", is_project=True), tasks, TODAY).label == expected
 
 
 def test_a_dropped_project_stays_dropped_whatever_its_tasks_say():
     project = Task("p", is_project=True, state=State.DROPPED)
-    assert standing(project, [Task("t", state=State.DOING)]).label == "dropped"
+    assert standing(project, [Task("t", state=State.DOING)], TODAY).label == "dropped"

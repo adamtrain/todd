@@ -27,11 +27,20 @@ BLOCKED = (
     "blocker, or none. `todd block 16 --on 15`, `todd unblock 16`."
 )
 
+DEFERRED = (
+    "Not a state either: a task can be put off until a date (`todd defer 12 mon`, "
+    "`todd defer 12 none` to stop). Until that date it stays out of `todd now`; `todd ls` still "
+    "shows it, marked deferred. On the date it's back. It's separate from a due date, and a "
+    "task can have both. Starting or finishing a deferred task ends the deferral."
+)
+
 PROJECTS = (
     "A project is work moved forward through one or more tasks. Its state is never set by "
     "hand; it comes from its tasks: doing if any task is under way; otherwise in review, to "
-    "do, then waiting, among tasks that aren't blocked; blocked when every open task waits on "
-    "another; done when all its tasks are done (dropped if they were all dropped). Add a task "
+    "do, then waiting, among tasks that aren't blocked or deferred; deferred when every task "
+    "that could be worked on is deferred, until the soonest of their dates (a project is never "
+    "deferred itself); blocked when every open task waits on another; done when all its tasks "
+    "are done (dropped if they were all dropped). Add a task "
     "to a finished project and it's open again. You can drop a whole project, which drops its "
     "open tasks. Tasks outside any project are listed under No project."
 )
@@ -71,7 +80,8 @@ def as_text() -> str:
     """The whole glossary, plainly: for Claude."""
     lines = ["Task states:"]
     lines += [f"- {state.value} ({state.label}): {meaning}" for state, meaning in STATES]
-    lines += [f"Blocked: {BLOCKED}", f"Projects: {PROJECTS}", f"Following: {FOLLOWING}"]
+    lines += [f"Blocked: {BLOCKED}", f"Deferred: {DEFERRED}"]
+    lines += [f"Projects: {PROJECTS}", f"Following: {FOLLOWING}"]
     lines.append(f"Follow-ups: {FOLLOW_UPS}")
     lines.append(f"Numbers: {NUMBERS}")
     return "\n".join(lines)

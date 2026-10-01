@@ -297,14 +297,15 @@ def _projects(conn: sqlite3.Connection, *, closed: bool = False) -> list[tuple[T
     for project in store.tasks(conn, projects=True):
         assert project.id is not None
         tasks = store.project_tasks(conn, project.id)
-        where = standing(project, tasks).state
+        where = standing(project, tasks, _today()).state
         if closed or where is None or not where.closed:
             found.append((project, tasks))
     return found
 
 
 def _standing_of(conn: sqlite3.Connection, project_id: int) -> Standing:
-    return standing(store.get(conn, project_id), store.project_tasks(conn, project_id))
+    tasks = store.project_tasks(conn, project_id)
+    return standing(store.get(conn, project_id), tasks, _today())
 
 
 def _matching(
@@ -316,16 +317,20 @@ def _matching(
 
 
 def _now(session: Session, *, area: str | None = None, person: str | None = None) -> None:
-    """What you can act on now: doing, to do and not blocked, or not filed yet."""
+    """What you can act on now: doing, to do, or not filed yet, and neither blocked nor
+    deferred."""
     try:
         conn = session.conn
         _settle(session)
         tasks = _matching(session, [s for s in State if not s.closed], area, person)
-        free = [t for t in tasks if not t.blocked]
+        today = _today()
+        unblocked = [t for t in tasks if not t.blocked]
+        free = [t for t in unblocked if not t.deferred(today)]
         counts = {
             "waiting": sum(t.state == State.WAITING for t in free),
             "in review": sum(t.state == State.IN_REVIEW for t in free),
-            "blocked": sum(t.blocked for t in tasks),
+            "blocked": len(tasks) - len(unblocked),
+            "deferred": len(unblocked) - len(free),
             "following": sum(t.state == State.FOLLOWING for t in free),
         }
         local = datetime.now().astimezone()
@@ -338,7 +343,7 @@ def _now(session: Session, *, area: str | None = None, person: str | None = None
     render.now_view(
         out,
         [t for t in free if t.state in render.NOW_ORDER],
-        today=_today(),
+        today=today,
         now=store.now(),
         due=due,
         counts=counts,
@@ -381,7 +386,8 @@ def now(ctx: typer.Context, area: Area = None, person: Person = None) -> None:
     """What you can act on now: doing, next and not blocked, and follow-ups that are due.
 
     Anything not filed yet is here too. Each task says which project it's part of. What's
-    waiting, in review, blocked or only followed is counted underneath: see [bold]todd ls[/].
+    waiting, in review, blocked, deferred or only followed is counted underneath: see
+    [bold]todd ls[/].
     """
     _now(_session(ctx), area=area, person=person)
 
@@ -940,6 +946,17 @@ def note(
     render.success(err, Text.assemble(f"Noted on #{task.id}  ", (task.title, render.FAINT)))
 
 
+def _defer_date(task: Task, text: str) -> date | None:
+    """The date `text` says to defer `task` until, or None to stop deferring it."""
+    if task.is_project:
+        raise ToddError(
+            f"#{task.id} is a project, and a project isn't deferred itself.",
+            hint="Defer its tasks: a project is deferred for as long as every task that could "
+            f"be worked on is (see [bold]todd show {task.id}[/]).",
+        )
+    return parse_due(text, _today())
+
+
 def _project_number(conn: sqlite3.Connection, text: str) -> int | None:
     """The project `--in` names, or None for "none"."""
     if text.strip().lower() in ("", "none"):
@@ -1007,6 +1024,14 @@ def edit(
             "--due", "-d", help="YYYY-MM-DD, today, tomorrow, fri… or none.", show_default=False
         ),
     ] = None,
+    defer: Annotated[
+        str | None,
+        typer.Option(
+            "--defer",
+            help="Keep it out of todd now until this date (as for --due), or none.",
+            show_default=False,
+        ),
+    ] = None,
     people: Annotated[
         str | None, typer.Option("--people", help="Comma-separated names.", show_default=False)
     ] = None,
@@ -1052,6 +1077,8 @@ def edit(
             fields["priority"] = priority
         if due is not None:
             fields["due"] = parse_due(due, _today())
+        if defer is not None:
+            fields["defer_until"] = _defer_date(current, defer)
         if not fields and people is None:
             raise ToddError(
                 "Nothing to change.", hint="See [bold]todd edit --help[/] for what you can set."
@@ -1348,6 +1375,10 @@ def _transition(
             render.warn(err, f"#{task_id} is already {state.label}.")
             return
         project_was = _standing_of(conn, before.project_id) if before.project_id else None
+        # Getting on with a deferred task ends the deferral, whatever date was said.
+        resumed = state in (State.DOING, State.IN_REVIEW, State.DONE) and before.deferred(_today())
+        if resumed:
+            store.update(conn, task_id, defer_until=None)
         old = store.set_state(
             conn,
             task_id,
@@ -1369,6 +1400,8 @@ def _transition(
         )
         if state == State.WAITING and task.waiting_on:
             out.print(Text(f"  waiting on {task.waiting_on}", style=render.WARN))
+        if resumed:
+            err.print(Text("  No longer deferred.", style=render.FAINT))
         if not state.closed and task.open_blockers and not with_project:
             waits = ", ".join(f"#{b.id} {b.title}" for b in task.open_blockers)
             render.warn(err, f"#{task_id} is still blocked by {waits}.")
@@ -1441,14 +1474,14 @@ def _project_moved(
     conn = session.conn
     project = store.get(conn, project_id)
     tasks = store.project_tasks(conn, project_id)
-    now = standing(project, tasks)
+    now = standing(project, tasks, _today())
     if now.label == was.label:
         return
     err.print()
     line = Text.assemble(
         ("▸ ", render.PROJECT), (f"#{project_id} {project.title}", render.PROJECT), " is now "
     )
-    line.append(now.label, style=f"bold {render.standing_color(now)}")
+    line.append(render.standing_words(now, _today()), style=f"bold {render.standing_color(now)}")
     if now.state == State.DONE:
         line.append(f": all {render.plural(len(tasks), 'task')} finished", style=render.FAINT)
     err.print(line)
@@ -1489,7 +1522,7 @@ def _move_project(
             if not _yes(question, default=False):
                 err.print(Text("  Left it as it was.", style=render.FAINT))
                 return
-        was = standing(project, tasks)
+        was = standing(project, tasks, _today())
         # The project first, so its tasks are stamped as dropped with it (see reopening).
         store.set_state(conn, project.id, State.DROPPED, note=note_text)
         render.success(
@@ -1647,6 +1680,70 @@ def follow(
     ([bold]todd reopen[/]), done or dropped.
     """
     _transition(ctx, task_id, State.FOLLOWING, words, yes=yes, local=local, no_jira=no_jira)
+
+
+@app.command()
+def defer(
+    ctx: typer.Context,
+    task_id: TaskId,
+    until: Annotated[
+        list[str],
+        typer.Argument(
+            help="Until when: YYYY-MM-DD, tomorrow, mon, +14, next week… or none to stop.",
+            show_default=False,
+        ),
+    ],
+) -> None:
+    """Put a task off until a date: it stays out of [bold]todd now[/] until then.
+
+    It's still in [bold]todd ls[/], marked deferred, and nothing else about it changes. A
+    project is deferred for as long as every task of its that could be worked on is, until
+    the soonest of their dates; you defer its tasks, not the project.
+    """
+    session = _session(ctx)
+    try:
+        conn = session.conn
+        task = store.get(conn, task_id)
+        day = _defer_date(task, " ".join(until))
+        if task.state.closed:
+            raise ToddError(f"#{task_id} is {task.state.label}, so there's nothing to put off.")
+        project_was = _standing_of(conn, task.project_id) if task.project_id else None
+        with db.tx(conn):
+            store.update(conn, task_id, defer_until=day)
+            note = f"Deferred until {day.isoformat()}" if day else "No longer deferred"
+            store.log(conn, task_id, EntryKind.NOTE, note)
+        task = store.get(conn, task_id)
+    except ToddError as e:
+        raise _fail(e) from e
+    today = _today()
+    if day is None:
+        render.success(err, Text.assemble((f"#{task_id} ", "bold"), "is no longer deferred"))
+    elif not task.deferred(today):
+        render.warn(err, f"{day:%a} {day:%b} {day.day} isn't in the future, so #{task_id} stays.")
+    else:
+        render.success(
+            err,
+            Text.assemble(
+                (f"#{task_id} ", "bold"),
+                (f"deferred until {day:%a} {day:%b} {day.day}", render.DEFERRED),
+                "  ",
+                (task.title, render.FAINT),
+            ),
+        )
+    if task.project_id is not None and project_was is not None:
+        now = _standing_of(session.conn, task.project_id)
+        if (now.label, now.until) != (project_was.label, project_was.until):
+            err.print(
+                Text.assemble(
+                    ("  ▸ ", render.PROJECT),
+                    (f"#{task.project.id} {task.project.title}" if task.project else "", ""),
+                    " is now ",
+                    (
+                        render.standing_words(now, today),
+                        f"bold {render.standing_color(now)}",
+                    ),
+                )
+            )
 
 
 @app.command()
@@ -2210,6 +2307,10 @@ def followup_snooze(
 # ── In your own words ────────────────────────────────────────────────────────
 
 
+# How many times Claude may come back for more steps in one request.
+MAX_ROUNDS = 6
+
+
 @app.command("do", hidden=True)
 def do(
     ctx: typer.Context,
@@ -2218,81 +2319,114 @@ def do(
         bool, typer.Option("--yes", "-y", help="Run the plan without asking first.")
     ] = False,
 ) -> None:
-    """Say what you want: Claude works out the todd commands, shows you, and runs them."""
+    """Say what you want: Claude works out the todd commands, shows you, and runs them.
+
+    When later commands depend on what earlier ones do (the number a new task gets, say),
+    Claude gives the first ones, todd runs them, and Claude gives the rest.
+    """
     session = _session(ctx)
-    request = " ".join(words).strip()
     group = command_group()
-    conversation = intent.Conversation(request)
-    try:
-        while True:
-            with err.status(
-                render.stage("working out what you mean", "Asking Claude"),
-                spinner_style=render.ACCENT,
-            ):
-                plan = intent.understand(
-                    conversation,
-                    group,
-                    session.conn,
-                    session.config,
-                    today=_today(),
-                    names=session.names,
-                )
-            if plan.question:
-                err.print(Text.assemble(("? ", f"bold {render.ACCENT}"), plan.question))
-                if not _interactive():
-                    raise typer.Exit(1)
-                answer = Prompt.ask("  ", console=err, default="", show_default=False).strip()
-                if not answer:
-                    err.print(Text("Nothing done.", style=render.FAINT))
-                    return
-                conversation.exchanges.append((plan.question, answer))
-                continue
-            if problems := intent.problems_in(plan, group):
-                raise ToddError(
-                    "Claude's plan has commands todd can't run, so nothing was done.",
-                    detail="\n".join(problems),
-                    hint="Try saying it another way, or use a command directly (todd --help).",
-                )
-            if not plan.steps:
-                render.warn(err, "Claude didn't find anything to do for that.")
-                return
-            render.plan(err, plan.steps)
-            if plan.looks_only or yes:
-                break
-            if not _interactive():
-                render.warn(
-                    err,
-                    "Nothing done: todd asks before changing anything, and can't ask here.",
-                    hint='Run it in a terminal, or say [bold]todd do -y "…"[/].',
-                )
-                raise typer.Exit(1)
-            choice = ask.choose(
-                "Do it?",
-                [
-                    ask.Option("do", "Do it"),
-                    ask.Option("change", "Change it…"),
-                    ask.Option("cancel", "Cancel"),
-                ],
-                default=0,
-                console=err,
+    conversation = intent.Conversation(" ".join(words).strip())
+    for _ in range(MAX_ROUNDS):
+        try:
+            plan = _agree_on_plan(session, group, conversation, yes=yes)
+        except ToddError as e:
+            raise _fail(e) from e
+        if plan is None:
+            return
+        _run_plan(session, group, plan.steps)
+        if not plan.then:
+            return
+        conversation = conversation.after(plan)
+    render.warn(
+        err,
+        f"Stopped there: that's {MAX_ROUNDS} rounds of steps, and Claude still had more.",
+        hint="Say what's left as a new request.",
+    )
+
+
+def _agree_on_plan(
+    session: Session, group: TyperGroup, conversation: intent.Conversation, *, yes: bool
+) -> intent.Plan | None:
+    """Claude's next steps for the request, shown and agreed to. None when there's nothing
+    (more) to do, or you said not to."""
+    while True:
+        with err.status(
+            render.stage(
+                "working out what's left" if conversation.ran else "working out what you mean",
+                "Asking Claude",
+            ),
+            spinner_style=render.ACCENT,
+        ):
+            plan = intent.understand(
+                conversation,
+                group,
+                session.conn,
+                session.config,
+                today=_today(),
+                names=session.names,
             )
-            if choice == "cancel":
+        if plan.question:
+            err.print(Text.assemble(("? ", f"bold {render.ACCENT}"), plan.question))
+            if not _interactive():
+                raise typer.Exit(1)
+            answer = Prompt.ask("  ", console=err, default="", show_default=False).strip()
+            if not answer:
                 err.print(Text("Nothing done.", style=render.FAINT))
-                return
-            if choice == "do":
-                break
-            change = Prompt.ask(
-                Text.from_markup("  What should change? [dim](Enter to go back)[/]"),
-                console=err,
-                default="",
-                show_default=False,
-            ).strip()
-            if change:
-                conversation.previous = plan
-                conversation.changes.append(change)
-    except ToddError as e:
-        raise _fail(e) from e
-    _run_plan(session, group, plan.steps)
+                return None
+            conversation.exchanges.append((plan.question, answer))
+            continue
+        if problems := intent.problems_in(plan, group):
+            raise ToddError(
+                "Claude's plan has commands todd can't run, so nothing "
+                + ("more " if conversation.ran else "")
+                + "was done.",
+                detail="\n".join(problems),
+                hint="Try saying it another way, or use a command directly (todd --help).",
+            )
+        if not plan.steps:
+            if not conversation.ran:
+                render.warn(err, "Claude didn't find anything to do for that.")
+            return None
+        render.plan(err, plan.steps, then=plan.then, more=bool(conversation.ran))
+        if plan.looks_only or yes:
+            return plan
+        if not _interactive():
+            render.warn(
+                err,
+                "Nothing done: todd asks before changing anything, and can't ask here.",
+                hint='Run it in a terminal, or say [bold]todd do -y "…"[/].',
+            )
+            raise typer.Exit(1)
+        choice = ask.choose(
+            "Do it?",
+            [
+                ask.Option("do", "Do it"),
+                ask.Option("change", "Change it…"),
+                ask.Option("cancel", "Cancel" if not conversation.ran else "Stop here"),
+            ],
+            default=0,
+            console=err,
+        )
+        if choice == "cancel":
+            err.print(
+                Text(
+                    "Nothing more done." if conversation.ran else "Nothing done.",
+                    style=render.FAINT,
+                )
+            )
+            return None
+        if choice == "do":
+            return plan
+        change = Prompt.ask(
+            Text.from_markup("  What should change? [dim](Enter to go back)[/]"),
+            console=err,
+            default="",
+            show_default=False,
+        ).strip()
+        if change:
+            conversation.previous = plan
+            conversation.changes.append(change)
 
 
 def command_group() -> TyperGroup:
@@ -2305,6 +2439,7 @@ def command_group() -> TyperGroup:
 def _run_plan(session: Session, group: TyperGroup, steps: list[intent.Step]) -> None:
     """Run each step through the ordinary command, stopping at the first that doesn't finish."""
     base = ["--db", str(session.db_path), "--config", str(session.config_path)]
+    session.numbers = store.numbers(session.conn)  # as they are now: this may be a later round
     _Plan.began = session.numbers
     for i, step in enumerate(steps, 1):
         if len(steps) > 1:
@@ -2677,7 +2812,7 @@ def _doctor_pr(url: str, names: Nicknames) -> None:
 HELP_LAYOUT = {
     "Capture and edit": ["add", "link", "note", "edit", "role", "triage"],
     "Look": ["now", "ls", "projects", "following", "show", "links", "open", "states"],
-    "Move": ["start", "wait", "review", "done", "follow", "drop", "reopen", "move"],
+    "Move": ["start", "wait", "review", "done", "follow", "defer", "drop", "reopen", "move"],
     "Blocking": ["block", "unblock"],
     "Jira, GitHub and Slack": ["reply", "push", "pull"],
     "People and follow-ups": ["nick", "followup"],

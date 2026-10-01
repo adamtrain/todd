@@ -57,6 +57,7 @@ STATE_COLORS = {
 }
 FOLLOWUP = "#e8a0bf"
 PROJECT = "#d7a65f"
+DEFERRED = "#8fa3b8"
 
 # What you can act on, in the order `todd now` shows it: what you're on, then what's next.
 NOW_ORDER = [State.DOING, State.TODO, State.INBOX]
@@ -127,7 +128,19 @@ def state_badge(state: State) -> Text:
 
 
 def standing_color(where: Standing) -> str:
-    return STATE_COLORS[where.state] if where.state is not None else PROJECT
+    if where.state is not None:
+        return STATE_COLORS[where.state]
+    return DEFERRED if where.until else PROJECT
+
+
+def until_text(day: date, today: date) -> str:
+    """A date something is put off until, the way lists say dates: "Fri", "Oct 12"."""
+    return f"until {due_text(day, today).plain}"
+
+
+def standing_words(where: Standing, today: date) -> str:
+    """A project's state in words: "waiting", "deferred until Oct 12"."""
+    return f"{where.label} {until_text(where.until, today)}" if where.until else where.label
 
 
 def standing_badge(where: Standing) -> Text:
@@ -307,7 +320,7 @@ def by_state(tasks: Iterable[Task]) -> list[Task]:
     return sorted(tasks, key=lambda t: (order.index(t.state), _sort_key(t)))
 
 
-def _detail(task: Task, names: Nicknames) -> Text | None:
+def _detail(task: Task, names: Nicknames, today: date) -> Text | None:
     """The line under a task's title: what it's stuck on, or what to do next."""
     if task.state == State.INBOX:
         return Text.assemble(
@@ -319,7 +332,12 @@ def _detail(task: Task, names: Nicknames) -> Text | None:
         )
     if task.blocked and not task.state.closed:
         waits = ", ".join(f"#{b.id} {b.title}" for b in task.open_blockers)
-        return Text(f"blocked by {waits}", style=PROJECT)
+        line = Text(f"blocked by {waits}", style=PROJECT)
+        if task.defer_until and task.deferred(today):
+            line.append(f" · deferred {until_text(task.defer_until, today)}", style=DEFERRED)
+        return line
+    if task.defer_until and task.deferred(today):
+        return Text(f"deferred {until_text(task.defer_until, today)}", style=DEFERRED)
     if task.state == State.WAITING and (who := waiting_summary(task, names)):
         return Text(f"waiting on reviews from {who}", style=WARN)
     if task.state == State.WAITING and task.waiting_on:
@@ -329,10 +347,12 @@ def _detail(task: Task, names: Nicknames) -> Text | None:
     return None
 
 
-def state_text(task: Task) -> Text:
-    """A task's state as a word; "blocked" when it can't start yet."""
+def state_text(task: Task, today: date) -> Text:
+    """A task's state as a word; "blocked" or "deferred" when it can't start yet."""
     if task.blocked and not task.state.closed:
         return Text("blocked", style=PROJECT)
+    if task.deferred(today):
+        return Text("deferred", style=DEFERRED)
     return Text(task.state.label, style=STATE_COLORS[task.state])
 
 
@@ -362,7 +382,11 @@ class Columns:
 
 
 def _due(task: Task, today: date) -> Text:
-    return due_text(None if task.state.closed else task.due, today)
+    """A task's deadline as lists show it: "due Fri", "due today", "overdue 2d"."""
+    when = due_text(None if task.state.closed else task.due, today)
+    if not when.plain or when.plain.startswith("overdue"):
+        return when
+    return Text.assemble(("due ", FAINT), when)
 
 
 def task_table(
@@ -412,7 +436,7 @@ def task_table(
         if project_names and task.project:
             title.append(f"  ▸ {task.project.title}", style=PROJECT)
         lines = [title]
-        if (detail := _detail(task, names)) is not None:
+        if (detail := _detail(task, names, today)) is not None:
             lines.append(detail)
         badges = link_badges(task)
         if not beside and badges.plain:
@@ -420,10 +444,10 @@ def task_table(
         row: list[RenderableType] = []
         if states:
             row.append(str(task.project_position or ""))
-        row.append(task_mark(task) if states else Text(mark, style=mark_style))
+        row.append(task_mark(task, today) if states else Text(mark, style=mark_style))
         row += [f"#{task.id}", Group(*lines) if len(lines) > 1 else title]
         if states:
-            row.append(state_text(task))
+            row.append(state_text(task, today))
         row.append(_due(task, today))
         if beside:
             row.append(badges)
@@ -452,6 +476,7 @@ def _elsewhere(counts: dict[str, int], done_this_week: int) -> Text:
         "waiting": STATE_COLORS[State.WAITING],
         "in review": STATE_COLORS[State.IN_REVIEW],
         "blocked": PROJECT,
+        "deferred": DEFERRED,
         "following": STATE_COLORS[State.FOLLOWING],
     }
     footer = Text()
@@ -557,13 +582,13 @@ def overview(
         if not section.tasks:
             continue
         if section.project is not None:
-            where = standing(section.project, section.all_tasks)
+            where = standing(section.project, section.all_tasks, today)
             head = Text.assemble(
                 ("▸ ", PROJECT),
                 (f"#{section.project.id} ", FAINT),
                 (section.project.title, f"bold {PROJECT}"),
                 "  ",
-                (where.label, f"bold {standing_color(where)}"),
+                (standing_words(where, today), f"bold {standing_color(where)}"),
                 (f" · {progress(section.all_tasks)}", FAINT),
             )
         else:
@@ -598,6 +623,7 @@ def glossary(console: Console) -> None:
     console.print(Padding(grid, (0, 0, 0, 4)), width=w)
     for title, text, color in (
         ("Blocked", words.BLOCKED, PROJECT),
+        ("Deferred", words.DEFERRED, DEFERRED),
         ("Projects", words.PROJECTS, PROJECT),
         ("Following", words.FOLLOWING, STATE_COLORS[State.FOLLOWING]),
         ("Follow-ups", words.FOLLOW_UPS, FOLLOWUP),
@@ -740,13 +766,22 @@ def card(
     """A task's card. For a project, pass its `tasks`: its state comes from theirs."""
     color = STATE_COLORS[task.state]
     badge = state_badge(task.state)
+    put_off: date | None = task.defer_until if task.deferred(today) else None
     if task.is_project:
-        where = standing(task, tasks or [])
-        color = standing_color(where)
+        where = standing(task, tasks or [], today)
+        color, put_off = standing_color(where), where.until
         badge = Text.assemble(
             (" PROJECT ", f"bold #111111 on {PROJECT}"), " ", standing_badge(where)
         )
     rows: list[RenderableType] = [Text.assemble(badge, "  ", (task.title, "bold"))]
+    if put_off:
+        what = " (when its next task comes back)" if task.is_project else ""
+        rows.append(
+            Text.assemble(
+                (f"Deferred until {put_off:%a} {put_off:%b} {put_off.day}", DEFERRED),
+                (what, FAINT),
+            )
+        )
     if task.needs_title:
         rows.append(
             Text.assemble(
@@ -889,14 +924,16 @@ def stack_header(key: str, members: list[Link]) -> Text:
     )
 
 
-def task_mark(task: Task) -> Text:
-    """One character for where a task in a project stands."""
+def task_mark(task: Task, today: date) -> Text:
+    """One character for where a task stands: done, dropped, not yet startable, or open."""
     if task.state == State.DONE:
         return Text("✓", style=OK)
     if task.state == State.DROPPED:
         return Text("✗", style=FAINT)
     if task.blocked:
         return Text("◌", style=FAINT)
+    if task.deferred(today):
+        return Text("◌", style=DEFERRED)
     return Text("●", style=STATE_COLORS[task.state])
 
 
@@ -935,8 +972,8 @@ def projects(
         head = Text.assemble(
             ("▸ ", PROJECT), (f"#{project.id} ", FAINT), (project.title, f"bold {PROJECT}"), "  "
         )
-        where = standing(project, tasks)
-        head.append(where.label, style=f"bold {standing_color(where)}")
+        where = standing(project, tasks, today)
+        head.append(standing_words(where, today), style=f"bold {standing_color(where)}")
         head.append(f" · {progress(tasks)}", style=FAINT)
         console.print(head, width=w)
         table = task_table(tasks, today=today, w=w - 2, names=names, states=True, columns=columns)
@@ -1013,6 +1050,7 @@ def _as_task(filing: Any, state: State) -> Task:
         priority=filing.priority,
         due=filing.due,
         due_hint=filing.due_hint,
+        defer_until=filing.defer,
         waiting_on=filing.waiting_on,
         needs_title=filing.needs_title,
         people=filing.people,
@@ -1041,6 +1079,7 @@ def preview(
             item.title,
             state=item.track,
             blockers=[TaskRef(-n, "", State.TODO) for n in item.after],
+            defer_until=item.defer,
         )
         for item in filing.tasks
     ]
@@ -1085,6 +1124,8 @@ def preview(
             detail = None
             if item.after:
                 detail = Text("after " + ", ".join(f"task {n}" for n in item.after), style=FAINT)
+            elif item.defer and item.defer > today:
+                detail = Text(f"deferred {until_text(item.defer, today)}", style=DEFERRED)
             elif item.track == State.WAITING and item.waiting_on:
                 detail = Text(f"waiting on {item.waiting_on}", style=WARN)
             elif item.next_action:
@@ -1138,8 +1179,12 @@ def update_preview(
     )
 
 
-def plan(console: Console, steps: list[Any]) -> None:
-    """What todd is about to do for a request: each step, and the command it runs."""
+def plan(
+    console: Console, steps: list[Any], *, then: str | None = None, more: bool = False
+) -> None:
+    """What todd is about to do for a request: each step, and the command it runs. `then` is
+    what Claude will work out once these have run; `more` marks a later round of the same
+    request."""
     w = width(console)
     table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1), width=w, expand=True)
     table.add_column(justify="right", style=FAINT, no_wrap=True, width=3)
@@ -1149,8 +1194,10 @@ def plan(console: Console, steps: list[Any]) -> None:
             str(i),
             Group(Text(step.says, style="bold"), Text(step.command_line, style=FAINT)),
         )
+    if then:
+        table.add_row("…", Text.assemble(("then: ", FAINT), (then, "italic")))
     console.print()
-    console.print(section("todd will", w, ACCENT), width=w)
+    console.print(section("Next, todd will" if more else "todd will", w, ACCENT), width=w)
     console.print(table, width=w)
     console.print()
 

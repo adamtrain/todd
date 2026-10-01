@@ -225,16 +225,19 @@ STANDING_ORDER = [
 class Standing:
     """Where a project stands, worked out from its tasks."""
 
-    label: str  # "doing", "waiting", "blocked", "done"…
+    label: str  # "doing", "waiting", "blocked", "deferred", "done"…
     state: State | None  # the state it reads as, if any (for colors)
+    until: date | None = None  # for a deferred project: when its first task comes back
 
 
-def standing(project: Task, tasks: list[Task]) -> Standing:
+def standing(project: Task, tasks: list[Task], today: date) -> Standing:
     """A project's state, worked out from its tasks.
 
-    While any task is open, it's the most active state among the unblocked ones, or
-    "blocked" when every open task waits on another. When none is open, it's done (or dropped,
-    if every task was). Dropping the project itself is the one thing that overrides this.
+    While any task is open, it's the most active state among the ones that can be worked on
+    (not blocked, not deferred). Failing that it's deferred, until the soonest date a deferred
+    task comes back, or "blocked" when every open task waits on another. When none is open,
+    it's done (or dropped, if every task was). Dropping the project itself is the one thing
+    that overrides this.
     """
     if project.state == State.DROPPED:
         return Standing(State.DROPPED.label, State.DROPPED)
@@ -245,10 +248,13 @@ def standing(project: Task, tasks: list[Task]) -> Standing:
         finished = State.DONE if any(t.state == State.DONE for t in tasks) else State.DROPPED
         return Standing(finished.label, finished)
     unblocked = [t for t in open_tasks if not t.blocked]
+    ready = [t for t in unblocked if not t.deferred(today)]
     for state in STANDING_ORDER:
-        if any(t.state == state for t in unblocked):
+        if any(t.state == state for t in ready):
             shown = State.TODO if state == State.INBOX else state
             return Standing(shown.label, shown)
+    if unblocked:
+        return Standing("deferred", None, min(t.defer_until for t in unblocked if t.defer_until))
     return Standing("blocked", None)
 
 
@@ -278,6 +284,7 @@ class Task:
     priority: Priority = Priority.NORMAL
     due: date | None = None
     due_hint: str | None = None
+    defer_until: date | None = None  # not before this date: until then it's out of `todd now`
     waiting_on: str | None = None
     needs_title: bool = False  # Claude couldn't tell what this is; the title is a placeholder
     people: list[str] = field(default_factory=list)
@@ -309,3 +316,7 @@ class Task:
     @property
     def blocked(self) -> bool:
         return bool(self.open_blockers)
+
+    def deferred(self, today: date) -> bool:
+        """Put off until a date that hasn't come yet. (On the date itself, it's back.)"""
+        return self.defer_until is not None and self.defer_until > today and not self.state.closed

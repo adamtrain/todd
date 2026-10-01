@@ -8,8 +8,14 @@ from .conftest import SLACK_DM, answer
 from .test_cli import named, saved, todd
 
 
-def plan(*steps: tuple[list[str], str], question: str | None = None) -> dict:
-    return {"steps": [{"argv": argv, "says": says} for argv, says in steps], "question": question}
+def plan(
+    *steps: tuple[list[str], str], question: str | None = None, then: str | None = None
+) -> dict:
+    return {
+        "steps": [{"argv": argv, "says": says} for argv, says in steps],
+        "question": question,
+        "then": then,
+    }
 
 
 WEBHOOK, RUNBOOK = "Ship the Torii webhook", "Write the Torii runbook"
@@ -248,3 +254,86 @@ def test_context_gives_projects_their_derived_state_and_marks_blocked_tasks(shel
     todd("done", "2", "-J")  # "Document it" moved down to #2
     text = intent.context(db.connect(db.db_path()), TODAY, Nicknames())
     assert "[project" not in text  # a finished project isn't something to move
+
+
+# ── More than one round ────────────────────────────────────────────────────
+
+
+def test_claude_comes_back_for_steps_that_depend_on_earlier_ones(shell, picks):
+    two_tasks(shell)
+    shell.answers += [
+        plan(
+            (["add", "audit the Torii logs", "-y"], "Add a task: audit the Torii logs"),
+            then="make it wait on the runbook and start it",
+        ),
+        answer(title="Audit the Torii logs", links=[]),
+        plan(
+            (["block", "3", "--on", "2"], "Make #3 Audit the Torii logs wait on #2"),
+            (["start", "3", "-J"], "Start #3 Audit the Torii logs"),
+        ),
+    ]
+    result = todd("add a task to audit the torii logs, make it wait on the runbook, and start it")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "then: make it wait on the runbook and start it" in out
+    assert out.index("todd will") < out.index("Filed #3") < out.index("Next, todd will")
+    audit = named("Audit the Torii logs")
+    assert audit.state == State.DOING and [b.id for b in audit.blockers] == [2]
+    # You're asked about each round of steps, starting on Do it.
+    asked = [(question, default) for question, _, default in picks.asked if question == "Do it?"]
+    assert asked == [("Do it?", "do"), ("Do it?", "do")]
+
+    again = shell.prompts[-1]
+    assert "<done>" in again and '- todd add "audit the Torii logs" -y (Add a task' in again
+    assert "You said you would then: make it wait on the runbook and start it" in again
+    assert "#3 [to do] Audit the Torii logs" in again  # the tasks as they are now
+    assert "Give the steps that are left." in again
+
+
+def test_a_later_round_can_have_nothing_left_to_do(shell, picks):
+    two_tasks(shell)
+    shell.answers += [
+        plan((["start", "1", "-J"], "Start #1"), then="check whether more is needed"),
+        plan(),
+    ]
+    result = todd("start the webhook and anything it needs")
+    assert result.exit_code == 0 and named(WEBHOOK).state == State.DOING
+    assert "didn't find anything" not in result.output
+
+
+def test_you_can_stop_between_rounds(shell, picks):
+    two_tasks(shell)
+    shell.answers += [
+        plan((["start", "1", "-J"], "Start #1"), then="finish the runbook"),
+        plan((["done", "2", "-J"], "Finish #2")),
+    ]
+    picks.script += ["do", "cancel"]
+    out = todd("start the webhook then finish the runbook").output
+    assert picks.asked[-1][1] == ["do", "change", "cancel"]
+    assert "Nothing more done." in out
+    assert (named(WEBHOOK).state, named(RUNBOOK).state) == (State.DOING, State.TODO)
+
+
+def test_rounds_do_not_go_on_for_ever(shell, picks):
+    two_tasks(shell)
+    shell.answers += [plan((["show", "1"], "Look at #1"), then="look again")] * cli.MAX_ROUNDS
+    out = todd("keep looking at the webhook").output
+    assert f"that's {cli.MAX_ROUNDS} rounds of steps" in out
+    assert len([p for p in shell.prompts if "<request>keep looking" in p]) == cli.MAX_ROUNDS
+
+
+def test_a_failed_step_ends_the_whole_request(shell, picks):
+    two_tasks(shell)
+    shell.answers += [
+        plan((["done", "99"], "Finish #99"), then="start the runbook"),
+        plan((["start", "2", "-J"], "Start #2")),
+    ]
+    result = todd("finish 99 then start the runbook")
+    assert result.exit_code == 1 and named(RUNBOOK).state == State.TODO
+    assert len(shell.answers) == 1  # Claude wasn't asked for the rest
+
+
+def test_the_schema_asks_what_comes_after():
+    assert intent.SCHEMA["required"] == ["steps", "question", "then"]
+    assert intent.parse(plan((["ls"], "List"), then=" more ")).then == "more"
+    assert intent.parse(plan(then="more")).then is None  # nothing was run, so nothing follows
