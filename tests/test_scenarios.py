@@ -53,7 +53,6 @@ def test_1_waiting_on_review_of_a_stack_tied_to_tickets(two_tickets):
     shell.answers.append(
         answer(
             title="Land Priya's cluster-b stack",
-            kind="follow_up",
             track="waiting",
             waiting_on="reviews on the stack",
             links=link_roles("deliverable", "deliverable", "deliverable", "ticket", "ticket"),
@@ -85,9 +84,11 @@ def test_1_waiting_on_review_of_a_stack_tied_to_tickets(two_tickets):
     assert "Changes requested by: GitHub @sam-k (#86)." in prompt
     assert f"this PR stack {PR_URL} related to these tickets PLAT-412 PLAT-413" in prompt
 
-    # Many reviewers, shown compactly in the queue and in full in `todd show`.
-    queue = " ".join(todd().output.split())  # the list of reviewers wraps rather than truncates
-    assert "on reviews from luke-p, Platform reviewers, sam-k" in queue
+    # It's waiting, so it isn't in `todd` (what you can act on); `todd ls` has it. Many
+    # reviewers are shown compactly there and in full in `todd show`.
+    assert "Not yours to act on now: 1 waiting" in todd().output
+    listed = " ".join(todd("ls").output.split())  # the reviewers wrap rather than truncate
+    assert "waiting on reviews from luke-p, Platform reviewers, sam-k" in listed
     out = todd("show", "1").output
     assert "Waiting on reviews from luke-p, Platform reviewers, sam-k" in out
     assert "#86  open · changes requested  ✗ sam-k  … Platform reviewers  · you" in out
@@ -105,7 +106,6 @@ def test_2_a_ticket_with_slack_threads_that_are_only_context(shell):
     shell.answers.append(
         answer(
             title="Spike PLAT-412: can billing workers move to cluster-b?",
-            kind="investigate",
             due="2026-10-02",
             due_hint="by Friday",
             links=link_roles("ticket", "reference", "reference"),
@@ -143,7 +143,6 @@ def test_3_an_rfc_with_promises_to_mike(shell, monkeypatch):
     shell.answers.append(
         answer(
             title="Write the RFC on topic X",
-            kind="do",
             due="2026-10-02",
             links=[],
             follow_ups=[
@@ -178,7 +177,7 @@ def test_3_an_rfc_with_promises_to_mike(shell, monkeypatch):
     out = todd("review", "1").output
     assert "No longer needed: Tell Mike R the RFC review slips to next week" in out
     assert "Follow-up due: Ask Mike R to review the RFC" in out
-    assert "Kept for today: it's in your queue as ↪1" in out
+    assert "Kept for today: it's in todd now as ↪1" in out
     assert "↪1" in todd().output
     todd("followup", "done", "1")
     statuses = {f.action: f.status for f in saved().followups}
@@ -196,7 +195,6 @@ def test_4_following_something_that_might_land_on_you(shell, monkeypatch):
     shell.answers.append(
         answer(
             title="Follow the ledger write-split refactor",
-            kind="follow_up",
             track="following",
             links=link_roles("source"),
             follow_ups=[
@@ -216,20 +214,29 @@ def test_4_following_something_that_might_land_on_you(shell, monkeypatch):
     )
     assert saved().state == State.FOLLOWING
     out = todd().output
-    assert "Nothing on your list." in out and "1 following (todd following)" in out
+    assert "Nothing to act on right now." in out and "1 following" in out
+    assert "Follow the ledger" not in todd("ls").output  # only when you ask
+    out = todd("ls", "--following").output
+    assert "▸ Following 1" in out and "Follow the ledger write-split refactor" in out
     out = todd("following").output
     assert "Follow the ledger write-split refactor" in out
     assert "↪ Check in with Dana on the ledger refactor  Oct 14" in out
 
-    # The check-in shows up in the queue when it's due, though the item itself doesn't.
+    # The check-in shows up in `todd` when it's due, though the item itself doesn't.
     monkeypatch.setattr(cli, "_today", lambda: date(2026, 10, 14))
     out = todd().output
     assert "Follow-ups due 1" in out and "#1 Follow the ledger write-split refactor" in out
     todd("followup", "snooze", "1", "+14")
     assert "Follow-ups due" not in todd().output
 
+    # It isn't yours, so it can't be started or parked: only taken on, finished or dropped.
+    for verb in ("start", "wait", "review"):
+        result = todd(verb, "1")
+        assert result.exit_code == 1
+        assert "it can only become to do, done or dropped" in result.output
+
     # It landed on you after all.
-    todd("move", "1", "todo")
+    todd("reopen", "1")
     assert saved().state == State.TODO
     assert "Follow the ledger write-split refactor" in todd().output
 
@@ -310,8 +317,11 @@ def test_6b_asked_for_a_title_right_away_in_a_terminal(shell, picks):
 def test_any_state_to_any_other(shell):
     shell.answers.append(answer(links=link_roles("respond", "ticket")))
     todd("add", "reply to Priya", SLACK_DM, "PLAT-412", "-q", "numbers?")
-    assert "to do → following" in todd("move", "1", "following").output
-    assert "following → in review" in todd("move", "1", "in-review", "--no-jira").output
+    assert "to do → waiting" in todd("move", "1", "waiting", "-J").output
+    assert "waiting → inbox" in todd("move", "1", "inbox").output
+    assert "inbox → following" in todd("move", "1", "following").output
+    assert "following → to do" in todd("move", "1", "to do", "-J").output
+    assert "to do → in review" in todd("move", "1", "in-review", "--no-jira").output
     assert shell.transitions == []
     assert "Left Jira alone" in todd("move", "1", "done", "-J").output
     result = todd("move", "1", "sideways")
@@ -345,12 +355,12 @@ def test_links_prints_bare_links(shell):
     assert labelled[1] == "https://github.com/acme/billing/pull/85"
 
 
-def test_refresh_rereads_without_claude(shell):
+def test_pull_links_only_rereads_without_claude(shell):
     shell.answers.append(answer(links=link_roles("respond", "ticket")))
     todd("add", "reply to Priya", SLACK_DM, "PLAT-412", "-q", "numbers?")
     shell.tickets["PLAT-412"]["fields"]["status"]["name"] = "Blocked"
     calls = len(shell.ran("-p"))
-    todd("refresh")
+    todd("pull", "--links-only")
     assert saved().links[1].status == "Blocked"
     assert len(shell.ran("-p")) == calls  # no Claude
 
@@ -369,7 +379,7 @@ def test_followup_add_and_drop(shell):
 
 
 def test_adding_and_refiling_never_touch_jira(shell, config_file):
-    # Even with every state mapped, only moving a task (or `todd sync`) changes a ticket.
+    # Even with every state mapped, only moving a task (or `todd push`) changes a ticket.
     config_file(
         "[jira.status]\n"
         'todo = "To Do"\nwaiting = "Blocked"\nfollowing = "Watching"\n'
@@ -381,7 +391,7 @@ def test_adding_and_refiling_never_touch_jira(shell, config_file):
     shell.answers.append(answer(track="waiting", links=link_roles("ticket")))
     todd("triage", "1")
     todd("link", "1", SLACK_DM)
-    todd("refresh")
+    todd("pull", "--links-only")
     assert shell.ran("transition") == []
     assert [task.state for task in map(saved, (1, 2, 3))] == [
         State.TODO,

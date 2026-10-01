@@ -15,6 +15,21 @@ ran through the real Claude against a stand-in `acli` that served made-up ticket
 Run these on the work Mac. If something fails, send back the command, its output, and
 `todd doctor` (redact anything sensitive).
 
+## 0. Just say it
+
+Try a few things the way you'd naturally say them, with your real tasks:
+
+- [ ] `todd "move the <something> task to done and start the next one"`: the plan names the
+      right tasks; Enter runs it; Jira is still asked about.
+- [ ] `todd "what am I waiting on?"` and `todd "what can I work on?"`: show things without
+      asking first.
+- [ ] `todd states`, then phrase a request with those words ("park the bug bash, it's waiting
+      on Dana"): Claude picks the right state.
+- [ ] `todd "make <task> high priority and due friday"`: becomes an edit.
+- [ ] `todd "remind me to …"`: becomes a capture, with the usual filing preview.
+- [ ] Something ambiguous: Claude asks which task you mean.
+- [ ] Note anything it gets wrong; the command reference and prompt are easy to tune.
+
 ## 1. Setup
 
 ```sh
@@ -73,7 +88,7 @@ When todd asks, paste the Slack message and press Ctrl-D.
 
 - [ ] The ticket line shows ✓ with the right summary and status.
 - [ ] The Slack line says "message text kept".
-- [ ] The filed card makes sense: title, next step, kind, area, priority, due date, people.
+- [ ] The filed card makes sense: title, next step, area, priority, due date, people.
       Note anything Claude gets consistently wrong; that's prompt tuning.
 - [ ] `todd show <n>` shows the message under its link, with who wrote it.
 - [ ] `todd add -e` opens your editor and captures what you write.
@@ -97,7 +112,9 @@ todd drop <n> -J     # no question; Jira untouched
 - [ ] Typing Enter quickly, before the question appears, doesn't answer it.
 - [ ] Put a status your workflow can't reach into the mapping, then move a task: the error is
       readable, and the todd state still changed.
-- [ ] `todd sync <n> -y` fixes a ticket that has drifted.
+- [ ] `todd push <n> -y` fixes a ticket that has drifted.
+- [ ] Move a ticket in Jira yourself, then `todd pull <n>`: it notices, proposes the matching
+      todd state, and applies it when you pick Apply it.
 
 ## 6. Replying in Slack
 
@@ -124,40 +141,53 @@ todd doctor --pr <an unstacked PR>
 Try each with real links, and note anything Claude gets wrong.
 
 - [ ] `todd add "Currently waiting on review from this PR stack" <PR> "related to these tickets" <KEY> <KEY>`:
-      filed as *waiting*. The queue says "on reviews from …" with the right people, and
-      `todd show` has the reviewer table. Is the summary readable when many people are pending?
+      filed as *waiting*. It isn't in `todd` (it's counted under "Not yours to act on now");
+      `todd ls` says "waiting on reviews from …" with the right people, and `todd show` has the
+      reviewer table. Is the summary readable when many people are pending?
 - [ ] `todd add <KEY> "by Friday, see also" <slack> <slack>` (Enter to skip pasting): the Slack
       links show as *reference*, and `todd done` doesn't offer to reply in them.
       `todd role <n> 2 reply` changes that.
 - [ ] The RFC one: two follow-ups, one for asking Mike to review (when in review) and one for
       warning him on Friday, unless it's in review by then.
 - [ ] `todd add "Following" <slack> "…might end up on my plate"`: it's not in `todd`, it is in
-      `todd following` with a check-in date, and the check-in shows in `todd` when it's due.
+      `todd following` (and `todd ls --following`) with a check-in date, and the check-in
+      shows in `todd` when it's due. `todd start <n>` refuses; `todd reopen <n>` takes it on.
 - [ ] `todd add "I need to complete" <KEY> "and tell Theo A when I'm done"`: titled from the ticket.
       On `todd done`, it offers to draft the message to Theo.
 - [ ] `todd add "I need to address" <slack> "and tell Mary S when I'm done"`, without pasting:
       todd asks you for a title instead of inventing one.
 
-## 9. Projects
+## 9. Projects and lists
 
 - [ ] Describe a chain in one capture, with a ticket per part, the way you would naturally:
       `todd add "Waiting on reviews for this stack" <PR> <KEY> "then a bug bash" <KEY> "then
       configure the live feature for <customer>" <KEY>`. Claude makes one project with a task
       per part, in order, each with the right ticket (the stack goes with the first).
-- [ ] `todd` shows only the first task (with the project's name); the footer counts the blocked
-      ones; `todd projects` and `todd show <project>` show all three, in order.
-- [ ] `todd done <first>` says what it unblocked, and the next task appears in `todd`.
-- [ ] Finishing the last task asks whether the project is done, starting on No. Answering No
-      puts "needs a next task" in `todd` until `todd add "…" --in <project>`.
+- [ ] `todd` shows only what you can act on, each task with its project's name; the footer
+      counts what's waiting, in review, blocked and followed.
+- [ ] `todd ls` shows the project with the right state (waiting, while its first task waits on
+      reviews), every task with its state, and loose tasks under "No project".
+- [ ] Nothing is cut off in `todd`, `todd ls` or `todd projects`: project names, ticket keys and
+      "stack N (M PRs)" are all there in full, at your usual terminal width and a narrow one.
+- [ ] `todd done <first>` says what it unblocked and what the project is now; the next task
+      appears in `todd`.
+- [ ] Finishing the last task says the project is done, without asking anything about the
+      project. `todd add "…" --in <project>` opens it again.
+- [ ] Describe tasks that can run together ("then docs and the support briefing at the same
+      time, then the announcement"): both wait on the same task, and the last waits on both.
+- [ ] `todd start <project>` refuses and says why. `todd drop <project>` asks (starting on No),
+      then drops its open tasks; `todd reopen <project>` brings them back.
 - [ ] A single task is still a single task: Claude doesn't invent tasks of its own.
 
 ## 10. Moving, links and Jira failures
 
-- [ ] `todd move <n> <state>` works from any state to any other. `--no-jira` leaves the ticket.
+- [ ] `todd move <n> <state>` works from any state to any other (except out of following,
+      which only goes to to do, done or dropped). `--no-jira` leaves the ticket.
 - [ ] Map a state to a status your workflow can't reach and move a task there. todd says it
       failed and prints the ticket's link on a line of its own. Can you ⌘-click it?
 - [ ] `todd links <n>`: can you ⌘-click every line, including long URLs?
-- [ ] `todd refresh`: statuses and reviewers catch up with what changed in Jira and GitHub.
+- [ ] `todd pull`: statuses and reviewers catch up with what changed in Jira and GitHub, and
+      Claude is only asked about tasks whose links changed.
 
 ## 11. Nicknames
 

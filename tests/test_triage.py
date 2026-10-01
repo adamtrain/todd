@@ -4,7 +4,7 @@ import pytest
 
 from todd import db, store, triage
 from todd.config import Config
-from todd.models import Kind, Link, LinkKind, Priority, Role, State, Task
+from todd.models import Link, LinkKind, Priority, Role, State, Task
 from todd.people import Nicknames
 
 from .conftest import PR_URL, SLACK_DM, SOLO_PR_URL, TODAY, load
@@ -204,7 +204,6 @@ def test_parse_a_good_answer():
         load("claude_envelope")["structured_output"], fallback_title="x", n_links=2
     )
     assert filing.title == "Send Priya the Q3 migration numbers"
-    assert filing.kind == Kind.REPLY
     assert filing.area == "platform"  # lowercased
     assert filing.priority == Priority.HIGH
     assert filing.due == date(2026, 10, 1)
@@ -216,7 +215,6 @@ def test_parse_forgives_nonsense():
     filing = triage.parse(
         {
             "title": "  ",
-            "kind": "chore",
             "priority": "p0",
             "due": "next week",
             "people": ["", 3, "Sam"],
@@ -226,7 +224,6 @@ def test_parse_forgives_nonsense():
         n_links=1,
     )
     assert filing.title == "the fallback"
-    assert filing.kind is None
     assert filing.priority == Priority.NORMAL
     assert filing.due is None
     assert filing.people == ["Sam"]

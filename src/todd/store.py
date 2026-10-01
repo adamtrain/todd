@@ -14,7 +14,6 @@ from todd.models import (
     EntryKind,
     Followup,
     FollowupStatus,
-    Kind,
     Link,
     LinkKind,
     Priority,
@@ -31,7 +30,6 @@ TASK_FIELDS = frozenset(
         "title",
         "description",
         "next_action",
-        "kind",
         "area",
         "priority",
         "due",
@@ -92,7 +90,6 @@ def _task(row: sqlite3.Row) -> Task:
         title=row["title"],
         description=row["description"],
         next_action=row["next_action"],
-        kind=Kind(row["kind"]) if row["kind"] else None,
         area=row["area"],
         is_project=bool(row["is_project"]),
         project_id=row["project_id"],
@@ -217,7 +214,9 @@ def _attach(conn: sqlite3.Connection, tasks: list[Task], *, entries: bool = Fals
 def get(conn: sqlite3.Connection, task_id: int) -> Task:
     row = conn.execute("SELECT * FROM task WHERE id = ?", (task_id,)).fetchone()
     if row is None:
-        raise ToddError(f"There's no task #{task_id}.", hint="See your queue with [bold]todd[/].")
+        raise ToddError(
+            f"There's no task #{task_id}.", hint="See what's open with [bold]todd ls[/]."
+        )
     return _attach(conn, [_task(row)], entries=True)[0]
 
 
@@ -226,7 +225,6 @@ def tasks(
     states: Iterable[State] | None = None,
     *,
     area: str | None = None,
-    kind: Kind | None = None,
     person: str | Sequence[str] | None = None,
     projects: bool | None = None,
     project_id: int | None = None,
@@ -246,9 +244,6 @@ def tasks(
     if project_id is not None:
         where.append("project_id = ?")
         params.append(project_id)
-    if kind:
-        where.append("kind = ?")
-        params.append(kind.value)
     if person:
         names = [person] if isinstance(person, str) else list(person)
         either = []
@@ -571,7 +566,7 @@ def update(conn: sqlite3.Connection, task_id: int, **fields: Any) -> None:
     sets = ", ".join(f"{name} = ?" for name in fields)
     conn.execute(
         f"UPDATE task SET {sets}, updated_at = ? WHERE id = ?",
-        [_sql(v.value if isinstance(v, State | Kind | Priority) else v) for v in fields.values()]
+        [_sql(v.value if isinstance(v, State | Priority) else v) for v in fields.values()]
         + [stamp(now()), task_id],
     )
 

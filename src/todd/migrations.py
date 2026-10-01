@@ -8,7 +8,6 @@ CREATE TABLE task (
   title       TEXT NOT NULL CHECK (length(trim(title)) > 0),
   description TEXT NOT NULL DEFAULT '',
   next_action TEXT,
-  kind        TEXT CHECK (kind IS NULL OR kind IN ('do','reply','review','decide','follow_up','investigate')),
   area        TEXT,
   priority    TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
   due         TEXT CHECK (due IS NULL OR due GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),

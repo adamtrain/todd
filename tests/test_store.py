@@ -5,7 +5,7 @@ import pytest
 
 from todd import db, store
 from todd.errors import ToddError
-from todd.models import EntryKind, Kind, Link, LinkKind, Priority, Role, State, Task
+from todd.models import EntryKind, Link, LinkKind, Priority, Role, State, Task
 
 from .conftest import SLACK_DM
 
@@ -53,15 +53,13 @@ def test_update_fields(conn):
     store.update(
         conn,
         task_id,
-        kind=Kind.REPLY,
         priority=Priority.HIGH,
         due=date(2026, 10, 1),
         area="platform",
     )
     store.set_people(conn, task_id, ["Priya", "priya", " Sam "])
     task = store.get(conn, task_id)
-    assert (task.kind, task.priority, task.due, task.area) == (
-        Kind.REPLY,
+    assert (task.priority, task.due, task.area) == (
         Priority.HIGH,
         date(2026, 10, 1),
         "platform",
@@ -90,14 +88,13 @@ def test_state_changes_are_logged_and_waiting_is_forgotten_on_leaving(conn):
 def test_filters(conn):
     a = store.add(conn, _task())
     b = store.add(conn, Task(title="Review PR"))
-    store.update(conn, a, area="platform", kind=Kind.REPLY)
+    store.update(conn, a, area="platform")
     store.set_people(conn, a, ["Priya Nair"])
-    store.update(conn, b, area="hiring", kind=Kind.REVIEW)
+    store.update(conn, b, area="hiring")
     store.set_state(conn, b, State.DONE)
     assert [t.id for t in store.tasks(conn)] == [a, b]
     assert [t.id for t in store.tasks(conn, [State.INBOX])] == [a]
     assert [t.id for t in store.tasks(conn, area="PLATFORM")] == [a]
-    assert [t.id for t in store.tasks(conn, kind=Kind.REVIEW)] == [b]
     assert [t.id for t in store.tasks(conn, person="priya")] == [a]
     assert store.areas(conn) == ["hiring", "platform"]
     assert store.counts(conn) == {State.INBOX: 1, State.DONE: 1}

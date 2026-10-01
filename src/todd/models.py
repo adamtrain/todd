@@ -54,6 +54,10 @@ PROGRESS = {
 }
 
 
+# Where a following item can go: you take it on, it's over, or you stop following it.
+FROM_FOLLOWING = (State.TODO, State.DONE, State.DROPPED)
+
+
 def parse_state(text: str) -> State | None:
     """A state from how people type it: in_review, in-review, "in review", review…"""
     key = text.strip().lower().replace("-", "_").replace(" ", "_")
@@ -62,19 +66,6 @@ def parse_state(text: str) -> State | None:
         return State(aliases.get(key, key))
     except ValueError:
         return None
-
-
-class Kind(StrEnum):
-    DO = "do"  # produce or change something
-    REPLY = "reply"  # someone asked you something; you owe an answer
-    REVIEW = "review"  # look over someone else's work
-    DECIDE = "decide"  # make or drive a decision
-    FOLLOW_UP = "follow_up"  # chase someone else for something
-    INVESTIGATE = "investigate"  # find something out, debug, research
-
-    @property
-    def label(self) -> str:
-        return self.value.replace("_", " ")
 
 
 class Priority(StrEnum):
@@ -218,6 +209,49 @@ class Entry:
     id: int | None = None
 
 
+# How a project stands while any of its tasks is open: the first of these that one of its
+# unblocked open tasks is in. Something moving beats something in review, which beats
+# something to do, which beats waiting on others.
+STANDING_ORDER = [
+    State.DOING,
+    State.IN_REVIEW,
+    State.TODO,
+    State.INBOX,
+    State.WAITING,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class Standing:
+    """Where a project stands, worked out from its tasks."""
+
+    label: str  # "doing", "waiting", "blocked", "done"…
+    state: State | None  # the state it reads as, if any (for colors)
+
+
+def standing(project: Task, tasks: list[Task]) -> Standing:
+    """A project's state, worked out from its tasks.
+
+    While any task is open, it's the most active state among the unblocked ones, or
+    "blocked" when every open task waits on another. When none is open, it's done (or dropped,
+    if every task was). Dropping the project itself is the one thing that overrides this.
+    """
+    if project.state == State.DROPPED:
+        return Standing(State.DROPPED.label, State.DROPPED)
+    if not tasks:
+        return Standing("no tasks yet", None)
+    open_tasks = [t for t in tasks if not t.state.closed]
+    if not open_tasks:
+        finished = State.DONE if any(t.state == State.DONE for t in tasks) else State.DROPPED
+        return Standing(finished.label, finished)
+    unblocked = [t for t in open_tasks if not t.blocked]
+    for state in STANDING_ORDER:
+        if any(t.state == state for t in unblocked):
+            shown = State.TODO if state == State.INBOX else state
+            return Standing(shown.label, shown)
+    return Standing("blocked", None)
+
+
 @dataclass(frozen=True, slots=True)
 class TaskRef:
     """Another task, as far as a task needs to know it: its project, or what blocks it."""
@@ -235,8 +269,7 @@ class Task:
     description: str = ""
     state: State = State.INBOX
     next_action: str | None = None
-    kind: Kind | None = None
-    area: str | None = None  # the kind of work it is: platform, hiring…
+    area: str | None = None  # the area of work it belongs to: platform, hiring…
     is_project: bool = False
     project_id: int | None = None  # the project this task is part of
     project_position: int | None = None  # its place among the project's tasks

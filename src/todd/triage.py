@@ -22,7 +22,6 @@ from todd.links import github_item, slack_message
 from todd.models import (
     EntryKind,
     Followup,
-    Kind,
     Link,
     LinkKind,
     Priority,
@@ -46,6 +45,7 @@ class Gathered:
     new: bool = False  # a pull request found through its stack, not yet on the task
     stack: github.Stack | None = None
     viewer: str | None = None  # your GitHub login, as GitHub reported it
+    changed: list[str] = field(default_factory=list)  # for todd pull: what's new since last time
 
 
 _CHECKS = {
@@ -224,11 +224,13 @@ GitHub users are shown as "Name (GitHub @login)" when the person has told todd w
 them. Use that name in people, waiting_on and follow_ups; otherwise use the login.
 
 Usually a capture is one task. Sometimes it's a project: work the person moves forward through \
-several tasks, where later ones can't start until earlier ones are done ("waiting on review for \
-this stack; once it's in, a bug bash, then configure the feature for Acme"), often with a ticket \
-for each. Then the record describes the project as a whole, and tasks lists its tasks in order. \
-Only list tasks the capture names; never split one piece of work into tasks of your own \
-invention. For a single task, tasks is empty.
+several tasks, often with a ticket for each. Usually later tasks can't start until earlier ones \
+are done ("waiting on review for this stack; once it's in, a bug bash, then configure the \
+feature for Acme"); sometimes some of them can go on at the same time. Then the record \
+describes the project as a whole, and tasks lists its tasks in order. Only list tasks the \
+capture names; never split one piece of work into tasks of your own invention. For a single \
+task, tasks is empty. Something the person is only following is always a single task, never a \
+project.
 
 The fields:
 - title: what needs doing, as a short imperative phrase under 80 characters, like "Send Priya \
@@ -239,9 +241,6 @@ explain it. Then title must be null: todd will ask the person. Never paper over 
 something vague like "Address Slack message" or "Handle request". Otherwise false.
 - next_action: the very next concrete step, in one short sentence of at most 20 words, like \
 "Pull the Q3 numbers from the migration dashboard".
-- kind: do (produce or change something), reply (someone asked something and is owed an \
-answer), review (look over someone else's work), decide (make or drive a decision), follow_up \
-(chase someone for something they owe), investigate (find something out, debug, research).
 - area: one of the listed areas if one fits; otherwise a short lowercase name that would \
 group similar work (reuse a name that's been used before where you can), or null if nothing \
 points to one.
@@ -288,13 +287,16 @@ there's nothing useful to say.
 - tasks: for a project, its tasks in order; otherwise empty. For a project, the fields above \
 describe the project: title names its goal ("Launch the live feature for Acme"), next_action is \
 the next thing to do in its first open task, and follow_ups are only the ones about the project \
-as a whole. Each task has title, needs_title, next_action, kind, track, waiting_on, priority, \
-due, due_hint, people and follow_ups, meaning what they mean above but for that task, plus:
+as a whole. Each task has title, needs_title, next_action, track (todo or waiting), waiting_on, \
+priority, due, due_hint, people and follow_ups, meaning what they mean above but for that task, \
+plus:
   - links: the indexes of the links that belong to that task, like its Jira ticket and its pull \
 requests. Every pull request in a stack goes with the same task. Links about the project as a \
 whole (an epic, the conversation it came from) belong to no task.
   - after: the numbers of the tasks (1 for the first) that must be done before this one can \
-start. Usually just the one before it; empty for the first.
+start. Usually just the one before it, and empty for the first. Tasks that can go on at the \
+same time don't wait on each other: two tasks that both follow task 1 each have after [1], a \
+task that needs both of those lists both, and a task that can start right away has none.
 
 Missing information is normal. Use null rather than guess.\
 """
@@ -327,7 +329,6 @@ _TASK_FIELDS: dict = {
     "needs_title": {"type": "boolean"},
     "next_action": {"type": "string"},
     "track": {"type": "string", "enum": ["todo", "waiting", "following"]},
-    "kind": {"type": "string", "enum": [k.value for k in Kind]},
     "priority": {"type": "string", "enum": [p.value for p in Priority]},
     "due": _NULLABLE_STRING,
     "due_hint": _NULLABLE_STRING,
@@ -340,6 +341,7 @@ _PROJECT_TASK = {
     "type": "object",
     "properties": {
         **_TASK_FIELDS,
+        "track": {"type": "string", "enum": ["todo", "waiting"]},  # following is never in a project
         "links": {"type": "array", "items": {"type": "integer"}},
         "after": {"type": "array", "items": {"type": "integer"}},
     },
@@ -354,7 +356,6 @@ SCHEMA: dict = {
         "needs_title": {"type": "boolean"},
         "next_action": {"type": "string"},
         "track": {"type": "string", "enum": ["todo", "waiting", "following"]},
-        "kind": {"type": "string", "enum": [k.value for k in Kind]},
         "area": _NULLABLE_STRING,
         "priority": {"type": "string", "enum": [p.value for p in Priority]},
         "due": _NULLABLE_STRING,
@@ -384,7 +385,6 @@ SCHEMA: dict = {
         "track",
         "follow_ups",
         "next_action",
-        "kind",
         "area",
         "priority",
         "due",
@@ -436,6 +436,8 @@ def _describe_link(index: int, gathered: Gathered) -> str:
     lines += [f"{k[0].upper() + k[1:]}: {v}" for k, v in gathered.facts.items()]
     if link.role_fixed and link.role:
         lines.append(f"Role, set by the person: {link.role.value}")
+    if gathered.changed:
+        lines.append("Since todd last looked: " + "; ".join(gathered.changed))
     if gathered.error:
         lines.append(f"(todd couldn't look this up: {gathered.error})")
     if link.quote:
@@ -523,7 +525,11 @@ def prompt(
     if existing := _describe_followups(task.followups):
         parts += [*existing, ""]
     if as_project:
-        parts += ["The person says this is a project, even if it has no tasks yet.", ""]
+        parts += [
+            "The person says this is a project. Give it at least one task: the first thing to "
+            "do, even if that's all that's clear yet.",
+            "",
+        ]
     elif not may_split:
         parts += ["This is being refiled, not captured: keep tasks empty.", ""]
     if areas:
@@ -554,7 +560,6 @@ class Filing:
     track: State = State.TODO  # where a task leaving the inbox goes: todo, waiting or following
     followups: list[Followup] = field(default_factory=list)
     next_action: str | None = None
-    kind: Kind | None = None
     area: str | None = None
     priority: Priority = Priority.NORMAL
     due: date | None = None
@@ -631,7 +636,6 @@ def _item(answer: dict, *, fallback_title: str, check_in: date | None) -> Filing
         track=track,
         followups=followups,
         next_action=_text(answer.get("next_action")),
-        kind=_enum(Kind, answer.get("kind")),
         priority=_enum(Priority, answer.get("priority"), Priority.NORMAL) or Priority.NORMAL,
         due=_date(answer.get("due")),
         due_hint=_text(answer.get("due_hint")),
@@ -662,8 +666,12 @@ def parse(
         )
     filing.links = verdicts
     raw = [t for t in answer.get("tasks") or [] if isinstance(t, dict)]
+    if filing.track == State.FOLLOWING:
+        raw = []  # something you're following is one task, never a project
     for i, item in enumerate(raw, 1):
-        task = _item(item, fallback_title=f"Task {i} of {filing.title}", check_in=check_in)
+        task = _item(item, fallback_title=f"Task {i} of {filing.title}", check_in=None)
+        if task.track == State.FOLLOWING:
+            task.track = State.TODO
         task.area = filing.area
         task.link_indexes = [
             n for n in item.get("links") or [] if isinstance(n, int) and 1 <= n <= n_links
@@ -716,7 +724,27 @@ def ask(
     filing.answer = answer
     if not may_split:
         filing.tasks = []
+    elif as_project and not filing.tasks:
+        filing.track = State.WAITING if filing.track == State.WAITING else State.TODO
+        filing.tasks = [first_task(filing)]
+    if task.project_id is not None and filing.track == State.FOLLOWING:
+        # Following is for things outside projects; in one, it's simply a task to do.
+        filing.track = State.TODO
     return filing
+
+
+def first_task(project: Filing) -> Filing:
+    """A project has at least one task. When you say something is a project and Claude names
+    no tasks, its first task is the project's own next step."""
+    return Filing(
+        title=project.next_action or f"Work out the first task for {project.title}",
+        track=project.track,
+        waiting_on=project.waiting_on,
+        area=project.area,
+        priority=project.priority,
+        due=project.due,
+        due_hint=project.due_hint,
+    )
 
 
 def revision(previous: Filing, changes: list[str]) -> str:
@@ -785,7 +813,6 @@ def _write(conn: sqlite3.Connection, task_id: int, filing: Filing) -> None:
         task_id,
         title=filing.title,
         next_action=filing.next_action,
-        kind=filing.kind,
         area=filing.area,
         priority=filing.priority,
         due=filing.due,

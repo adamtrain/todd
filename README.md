@@ -14,19 +14,25 @@
 
 ## Why todd
 
+- **Just say it.** `todd "move the current Torii task to done and start the next one"`. Claude
+  works out which todd commands you mean, using your actual tasks, and shows you the plan. Enter
+  runs it, with every command's usual questions (like the one before changing Jira). You don't
+  have to remember any commands; they're all still there for scripts.
 - **Capture in one line.** `todd add "reply to Priya about the Q3 numbers" <slack link> PLAT-412`.
   Links and Jira keys can go anywhere in the arguments.
 - **Claude files it.** todd reads what it can first: Jira tickets through `acli`, pull requests
-  through `gh`. Then one Claude call fills in the title, the next concrete step, the kind of work,
-  its area (platform, hiring…), the priority, any due date ("before Thursday's sync" becomes a
-  date), the people involved, and what each link is for.
+  through `gh`. Then one Claude call fills in the title, the next concrete step, its area
+  (platform, hiring…), the priority, any due date ("before Thursday's sync" becomes a date), the
+  people involved, and what each link is for.
 - **You see it before it's saved.** todd shows what Claude would file. Add it, tell Claude what
   to change ("make it high priority and call it …") as many times as you like, or leave it in
   your inbox.
+- **What you can act on, and nothing else.** `todd` shows what you're doing, what's next and
+  not blocked, and follow-ups that are due. `todd ls` shows everything open, by project.
 - **Projects, not just tasks.** Describe a chain ("waiting on review for this stack; once it's
   in, a bug bash, then configure the feature for Acme") and Claude files a project with a task
-  for each part, in order, each with its own ticket. Later tasks wait, out of your queue, until
-  the ones before them are done. A project with nothing open left asks for its next task.
+  for each part, each with its own ticket. Tasks wait on whichever others they need: one after
+  another, or several at once. A project's state is never set by hand; it comes from its tasks.
 - **Slack without a Slack app.** todd can't read Slack, so it asks you to paste the message. The
   text is kept with that link and marked as *that* message, so the context survives even if the
   link goes missing.
@@ -42,8 +48,8 @@
   date, and drop away when they stop mattering (the doc went out for review). todd offers to draft
   the message when one comes due.
 - **Things to follow, not do.** "Following <link>, might end up on my plate" goes on a separate
-  `todd following` list with a check-in date, out of your queue until the check-in comes due.
-- **Work the queue; Jira follows if you say so.** Move a task from any state to any other.
+  `todd following` list with a check-in date, out of your lists until the check-in comes due.
+- **Jira follows if you say so.** Move a task from any state to any other.
   Before any ticket changes, todd asks about that ticket with an arrow-key Yes/No, starting on
   No. `-y` and `--no-jira` skip the question either way. If Jira refuses, todd tells you and
   prints the ticket's link so you can do it yourself.
@@ -80,8 +86,39 @@ uv tool install --editable .
 
 ## Usage
 
+Say what you want, in your own words:
+
 ```sh
-todd                                   # your queue, with any follow-ups that are due
+todd "move the current Torii task to done and start the next one"
+todd "what am I waiting on from Nik?"
+todd "make the Priya one high priority and due friday"
+todd "remind me to send Mike the RFC draft tomorrow"
+```
+
+```text
+ todd will  ─────────────────────────────────────────────────────
+  1  Finish #2 Ship the Torii webhook
+     todd done 2
+  2  Start #3 Write the Torii runbook
+     todd start 3
+
+  Do it?   Do it   Change it…   Cancel    ←/→ Enter
+```
+
+Claude gets every todd command (generated from the CLI itself) and your current tasks, and
+answers with real command lines. todd checks each one parses before showing you, then runs them
+in order through the ordinary commands. A plan that only looks at things runs straight away.
+**Change it…** takes another instruction and shows the new plan. If Claude can't tell which task
+you mean, it asks. Quotes are optional (`todd show me what's waiting on Nik` works too); anything
+that isn't a valid command line goes to Claude. Without a terminal to ask in, a plan that changes
+things needs `todd do -y "…"`.
+
+Or use the commands directly:
+
+```sh
+todd                                   # what you can act on now (same as: todd now)
+todd ls                                # everything open, by project
+todd states                            # every state and what it means
 todd add "reply to Priya re: Q3 numbers" https://acme.slack.com/archives/D…/p… PLAT-412
 todd add "Currently waiting on review from this stack" <PR url> "for" PLAT-412 PLAT-413
 todd add PLAT-234 "by Friday, see also" <slack link> <slack link>
@@ -94,19 +131,70 @@ todd start 12                          # doing        (Jira → In Progress)
 todd wait 12 Priya to confirm numbers  # waiting, and on what
 todd review 12                         # in review    (Jira → In Review)
 todd done 12 sent the sheet            # done         (Jira → Done, follow-ups, reply in Slack)
-todd move 12 following --no-jira       # any state to any other; leave Jira be this time
+todd move 12 waiting --no-jira         # any state to any other; leave Jira be this time
 todd following                         # what you're keeping an eye on
 todd followup                          # everything you owe people
 todd links 12                          # every link, one per line, nothing else
 todd reply 12                          # where to reply, with an offer to draft it
 ```
 
-The states are `inbox` (captured, not filed yet), `todo`, `doing`, `waiting`, `in_review`,
-`done`, `dropped` and `following`. `todd move` goes from any state to any other, and `start`,
-`wait`, `review`, `done`, `drop`, `follow` and `reopen` are shortcuts. Each takes a note
-(`todd done 12 shipped it`), `-y` to update Jira without asking, `--no-jira` to leave Jira
-alone without asking, and `--local` to leave Jira and Slack alone. Adding a task never moves its
-tickets. If one should match, use `todd sync`.
+### What you see
+
+`todd` (or `todd now`) is what you can act on: follow-ups that are due, what you're doing,
+what's to do and not blocked, and anything not filed yet. Each task says which project it's part
+of. What's waiting, in review, blocked or only followed is counted underneath, not listed.
+
+```text
+↪ Follow-ups due 1
+   ↪3  Warn Mike R that review slips                                         today Sep 30
+       #11 Write the RFC on tenant isolation
+
+● Doing 1
+!   #7  Ship the Torii webhook  ▸ Torii webhook migration      Fri       PLAT-500      2h
+
+● To do 2
+!  #10  Send Priya the Q3 migration numbers                    tomorrow  PLAT-77 · Slack  1d
+    #9  Update the partner docs  ▸ Torii webhook migration                             3d
+
+Not yours to act on now: 2 waiting · 1 in review · 4 blocked · 1 following
+todd ls shows everything, by project
+```
+
+`todd ls` is everything open: each project with its state and its tasks in order (blocked ones
+too, with what blocks them), then the tasks that aren't part of a project under **No project**.
+`--following` adds what you're following, `--all` adds what's done or dropped, and `--area` and
+`--person` narrow it (they work on `todd now` too). Lists use the full width of your terminal
+and wrap rather than cut anything off; when it's narrow, a task's links go under its title.
+
+### States
+
+`todd states` prints this, with more detail:
+
+| State | Meaning |
+| --- | --- |
+| `inbox` | Captured but not filed by Claude yet. |
+| `todo` | Yours to do, not started. |
+| `doing` | You're working on it. |
+| `waiting` | You've done your part and are waiting on someone or something. |
+| `in_review` | Your work is done and out for review. |
+| `done` | Finished. |
+| `dropped` | Not doing it after all. |
+| `following` | Not yours (yet): something you're keeping an eye on. |
+
+**Blocked** isn't a state: a task is blocked while any task it waits on is still open, and
+stays out of `todd now` until it's free.
+
+`todd move` goes from any state to any other, and `start`, `wait`, `review`, `done`, `drop`,
+`follow` and `reopen` are shortcuts. Each takes a note (`todd done 12 shipped it`), `-y` to
+update Jira without asking, `--no-jira` to leave Jira alone without asking, and `--local` to
+leave Jira and Slack alone. Adding a task never moves its tickets. If one should match, use
+`todd push`.
+
+Two things work differently. A **project** is never moved itself: its state comes from its
+tasks (you can drop it, which drops its open tasks, and reopen it after that). And something
+you're **following** isn't yours to move along: it's always a task of its own, outside any
+project, and from there it can only become to do (`todd reopen 12`, when it lands on you), done
+or dropped.
 
 ### Changing Jira
 
@@ -121,28 +209,31 @@ The highlight starts on **No**. ←/→ (or Tab) move it and Enter picks; typing
 to that answer but still waits for Enter. Anything typed before the question appeared is
 ignored, so an early Enter can't answer it. Several tickets get a question each. Where todd
 can't ask (a script, a pipe), it leaves Jira alone and says how to catch up: `-y`, or
-`todd sync 12` later. The other choices todd offers (reply in Slack, follow-ups) work the same
+`todd push 12` later. The other choices todd offers (reply in Slack, follow-ups) work the same
 way.
 
 Other commands:
 
 | Command | What it does |
 | --- | --- |
-| `todd ls [--all] [--area name] [-k kind] [--person name]` | The queue, filtered. `--all` includes done and dropped. |
+| `todd now [--area name] [--person name]` | What you can act on. Plain `todd` is the same. |
+| `todd ls [--all] [--following] [--area name] [--person name]` | Everything open, by project. |
+| `todd states` | Every state and what it means, plus how projects, blocking, following and follow-ups work. |
 | `todd triage [id]` | File a task again (say, after adding links), or everything still in your inbox. |
 | `todd link 12 <links…> [-q text]` | Attach more links. |
 | `todd note 12 <text>` | Add to the timeline. |
 | `todd edit 12 --due fri --priority high --area none --in 7 …` | Correct what Claude filed; `--in` moves it into project #7 (or `none`). |
-| `todd sync 12` | Bring the Jira ticket in line with the task's state. |
-| `todd refresh [id]` | Re-read tickets and pull requests (statuses, reviewers, stacks) without asking Claude. |
+| `todd push 12` | Push the task's state to Jira: move its tickets to match (asking about each). |
+| `todd pull [id] [-y] [--links-only]` | Pull from Jira and GitHub: re-read the links and update the task to match (see below). |
 | `todd role 12 3 reply` | Say what link 3 is for. `reply` marks where you'll reply; refiling keeps it. |
 | `todd links 12 [--labels]` | Print the links bare, one per line, so your terminal can make them clickable. |
 | `todd followup add 12 "Tell Theo" [--to Theo] [--on fri \| --when done] [--unless in_review]` | Add a follow-up yourself. |
 | `todd followup done\|drop\|snooze N` | Close a follow-up (↪N), or move it to another day (`snooze 4 +7`). |
-| `todd projects [--all]` | Every project, with its tasks in order and what's blocking what. |
+| `todd projects [--all]` | Every project, with all its tasks in order (finished ones too) and what's blocking what. |
 | `todd add "…" --in 7 [--after 14,15 \| none]` | Add a task to project #7. By default it waits on the project's last open task. |
-| `todd add --project "…"` | Capture something as a project even before its tasks are clear. |
+| `todd add --project "…"` | Capture something as a project even when only its first task is clear. |
 | `todd block 16 --on 15` / `todd unblock 16 [--on 15]` | Say a task can't start until another is done, or stop it waiting. |
+| `todd drop 7` / `todd reopen 7` | For a project: drop it and its open tasks (after asking), or bring them back. |
 | `todd nick [login] [name…] [--remove]` | List, set or forget nicknames. |
 | `todd config [--init] [--edit]` | Where todd keeps things, and what it's set to do. |
 | `todd doctor [--claude] [--jira KEY] [--pr URL]` | Check the tools todd uses, and what it makes of a real ticket or PR. |
@@ -184,7 +275,8 @@ Slack links you capture are context by default. Say where you'll need to reply w
 
 ### Projects
 
-A project is work you move forward through several tasks. Describe the chain in one capture,
+A project is work you move forward through one or more tasks. A task doesn't have to be in a
+project; those that aren't are listed under **No project**. Describe the chain in one capture,
 and Claude files the project and its tasks:
 
 ```sh
@@ -193,23 +285,36 @@ todd add "Waiting on reviews for this stack" <PR url> PLAT-101 \
 ```
 
 ```text
-▸ #1 Launch the live feature for Acme  3 of 3 tasks open
-   1  ●  #2  Get the cluster-b stack reviewed and merged     waiting    PLAT-101 · stack of 3
+▸ #1 Launch the live feature for Acme  waiting · 3 of 3 tasks open
+   1  ●  #2  Get the cluster-b stack reviewed and merged    waiting    PLAT-101 · stack 530 (3 PRs)
              waiting on reviews from Nik (2), Will M
-   2  ◌  #3  Set up the bug bash (PLAT-102)                   blocked    PLAT-102
-             blocked by #2
-   3  ◌  #4  Configure the live feature for Acme (PLAT-103)   blocked    PLAT-103
-             blocked by #3
+   2  ◌  #3  Run the bug bash                               blocked    PLAT-102
+             blocked by #2 Get the cluster-b stack reviewed and merged
+   3  ◌  #4  Configure the live feature for Acme            blocked    PLAT-103
+             blocked by #3 Run the bug bash
 ```
 
-Each task keeps its own links, so its own Jira ticket moves (after asking) when it does. A
-blocked task waits under its project, out of your queue; the queue footer counts them. When you
-finish or drop the task in its way, todd tells you what that unblocked. When a project's last
-open task is done, todd asks whether the project is done too (the highlight starts on No). If
-not, the project shows in your queue as needing a next task until you add one with `--in`.
+**A project's state is never set by hand.** It comes from its tasks: doing if any task is under
+way; otherwise in review, to do, then waiting, among the tasks that aren't blocked; blocked when
+every open task waits on another; done when all its tasks are done. Finish the last task and
+todd tells you the project is done. Add a task to a finished project and it's open again. The
+one thing you do to a project itself is drop it (`todd drop 1`), which drops its open tasks
+after asking, and `todd reopen 1` brings those back.
 
-A project can start with no tasks at all (`todd add --project "Acme launch"`), and any task can
-be moved into one (`todd edit 16 --in 1`) or made to wait on another (`todd block 16 --on 15`).
+**Tasks wait on whichever tasks they need.** Usually that's one after another, but several tasks
+can wait on the same one and run at the same time, one task can wait on several, and a task can
+wait on nothing. Say it in the capture ("then docs and the support briefing together, then the
+announcement"), or set it yourself with `todd block 16 --on 15` and `todd unblock 16`. A blocked
+task stays out of `todd now`; when you finish or drop the task in its way, todd tells you what
+that unblocked.
+
+Each task keeps its own links, so its own Jira ticket moves (after asking) when it does. Links
+and follow-ups on the project itself act on the project's state: "tell sales when it's live"
+comes due when its last task is done.
+
+A project always has at least one task. `todd add --project "Acme launch"` makes a project out
+of something whose later tasks aren't clear yet, starting with its first task; add more with
+`todd add "…" --in 1`, or move an existing task in with `todd edit 16 --in 1`.
 
 ### Follow-ups
 
@@ -221,7 +326,7 @@ Mention them the way you'd say them, and Claude writes them down:
 | "told Mike R I'd ask him to review it this week, but it may slip" | ↪ Ask Mike R to review the RFC, due when it's in review. ↪ Tell Mike R review slips to next week, due Friday unless it's in review by then. |
 | "Following <link>…" | ↪ Check in on it, due on the day you said, or two weeks out |
 
-Follow-ups that are due show at the top of your queue, wherever their task is, even one you're
+Follow-ups that are due show at the top of `todd`, wherever their task is, even one you're
 only following. When a task reaches the state a follow-up waits for, todd offers to draft the
 message with Claude (copied to your clipboard), mark it done, or keep it for later. A dated
 follow-up that no longer matters (the doc went out for review before Friday) closes itself.
@@ -230,7 +335,18 @@ follow-up that no longer matters (the doc went out for review before Friday) clo
 
 Pull requests carry their reviewers: who's been asked and hasn't reviewed yet, who approved, and
 who wants changes. A waiting task sums up the pending requests across all its PRs, busiest
-reviewer first. `todd refresh` brings reviewers and statuses up to date.
+reviewer first. `todd pull` brings reviewers and statuses up to date.
+
+### Pulling and pushing
+
+Like git: `todd push 12` sends the task's state to Jira, and `todd pull 12` brings the task up to
+date with its links. Pull re-reads its tickets and pull requests, notes what changed since todd
+last looked (a ticket moved to Done, a stack merged, a reviewer approved), and asks Claude what
+that means for the task: its state, next step and what it's waiting on. You see the proposal
+first (**Apply it**, **Change it…**, **Skip**); a state change then goes through the usual move,
+with its Jira question, follow-ups and unblocking. `todd pull` on a project pulls its tasks too;
+`todd pull` alone pulls everything open, asking Claude only about tasks whose links changed.
+`--links-only` just re-reads the links.
 
 ### Pull request stacks
 

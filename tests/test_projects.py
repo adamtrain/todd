@@ -4,9 +4,9 @@ import copy
 
 import pytest
 
-from todd import db, store, triage
+from todd import cli, db, store, triage
 from todd.errors import ToddError
-from todd.models import State, Task
+from todd.models import State, Task, TaskRef, standing
 
 from .conftest import PR_URL, SLACK_DM, answer, load
 from .test_cli import saved, todd
@@ -24,7 +24,6 @@ def a_task(title: str, links: list[int], after: list[int], **changes) -> dict:
         "needs_title": False,
         "next_action": f"Next step for {(title or 'it').lower()}",
         "track": "todo",
-        "kind": "do",
         "priority": "normal",
         "due": None,
         "due_hint": None,
@@ -117,21 +116,60 @@ def test_what_capturing_a_project_shows(tickets):
     assert "blocked by #2" in out and "blocked by #3" in out
 
 
-def test_the_queue_shows_what_you_can_do_now(tickets):
+def test_now_shows_only_what_you_can_act_on(tickets):
     launch(tickets)
-    queue = " ".join(todd().output.split())
-    assert "Land the cluster-b stack ▸ Launch the live" in queue  # (the title wraps)
-    assert "Set up the bug bash" not in queue  # blocked: it waits under its project
-    assert "2 blocked (todd projects)" in queue
-    assert "Projects needing a next task" not in queue
+    tickets.answers.append(answer(links=[], title="Loose end"))
+    todd("add", "loose end")
+    now = " ".join(todd().output.split())
+    assert "Loose end" in now
+    assert "Land the cluster-b stack" not in now  # waiting: not yours to act on
+    assert "Set up the bug bash" not in now  # blocked
+    assert "Not yours to act on now: 1 waiting · 2 blocked" in now
+    assert "todd ls shows everything, by project" in now
+    todd("done", "2", "-J")
+    now = " ".join(todd("now").output.split())
+    assert "Set up the bug bash ▸ Launch the live feature for Acme" in now  # says its project
+    assert "1 blocked" in now
+
+
+def test_ls_shows_everything_open_by_project(tickets):
+    launch(tickets)
+    tickets.answers.append(answer(links=[], title="Loose end"))
+    todd("add", "loose end")
+    out = todd("ls").output
+    flat = " ".join(out.split())
+    assert "▸ #1 Launch the live feature for Acme waiting · 3 of 3 tasks open" in flat
+    assert "▸ No project 1" in flat
+    assert out.index(TITLES[0]) < out.index(TITLES[1]) < out.index(TITLES[2]) < out.index("Loose")
+    assert "blocked by #2 Land the cluster-b stack" in flat
+    assert "PLAT-412 · stack 17 (3 PRs)" in flat and "PLAT-413" in flat  # in full, not cut off
+    todd("done", "2", "-J")
+    flat = " ".join(todd("ls").output.split())
+    assert "Land the cluster-b stack" not in flat  # closed tasks only with --all
+    assert "to do · 2 of 3 tasks open" in flat
+    assert "Land the cluster-b stack" in todd("ls", "--all").output
+
+
+def test_nothing_is_cut_off_however_narrow(tickets, monkeypatch):
+    launch(tickets)
+    monkeypatch.setattr(cli.out, "_width", 60)
+    for command in (["ls"], ["projects"], ["show", "1"]):
+        output = todd(*command).output
+        assert max(len(line) for line in output.splitlines()) <= 60
+        flat = " ".join(output.split())
+        assert "Launch the live feature for Acme" in flat
+        assert "Land the cluster-b stack" in flat
+        assert "PLAT-412 · stack 17 (3 PRs)" in flat  # under the title: no room beside it
+        assert "…" not in flat
 
 
 def test_finishing_a_task_unblocks_the_next(tickets):
     launch(tickets)
     out = todd("done", "2", "-J").output
     assert "Unblocked: #3 Set up the bug bash" in out
-    queue = " ".join(todd().output.split())
-    assert "Set up the bug bash" in queue and "1 blocked" in queue
+    assert "#1 Launch the live feature for Acme is now to do" in out
+    now = " ".join(todd().output.split())
+    assert "Set up the bug bash" in now and "1 blocked" in now
     out = todd("reopen", "2", "-J").output
     assert "#3 Set up the bug bash waits on this again." in out
 
@@ -141,28 +179,59 @@ def test_starting_a_blocked_task_warns(tickets):
     assert "#3 is still blocked by #2 Land the cluster-b stack" in todd("start", "3", "-J").output
 
 
-def test_the_last_task_asks_whether_the_project_is_done(tickets, monkeypatch, picks):
+def test_a_project_is_done_when_its_tasks_are(tickets, picks):
     launch(tickets)
     for task_id in (2, 3):
         todd("done", str(task_id), "-J")
-    out = todd("done", "4", "-J").output  # Enter on the default: No
-    assert picks.asked[-1][0].startswith("That was the last open task in “Launch the live")
-    assert picks.asked[-1][2] == "no"
-    assert 'needs a next task: todd add "…" --in 1' in out
-    assert saved(1).state == State.TODO
-    assert "Projects needing a next task 1" in todd().output
+    out = todd("done", "4", "-J").output
+    assert "#1 Launch the live feature for Acme is now done: all 3 tasks finished" in out
+    assert all(not question.startswith("That was the last") for question, _, _ in picks.asked)
+    assert "PROJECT   DONE" in todd("show", "1").output
+    assert "Launch the live feature" not in todd("projects").output
+    assert "done · 0 of 3 tasks open" in todd("projects", "--all").output
 
-    # A new task in the project waits on its last open task by default; here there isn't one.
+    # Add a task to a finished project and it's open again. A new task waits on the project's
+    # last open task by default; here there isn't one.
     tickets.answers.append(answer(links=[], title="Write the launch announcement"))
     todd("add", "write the launch announcement", "--in", "1")
     announcement = saved(5)
     assert (announcement.project_id, announcement.project_position) == (1, 4)
     assert announcement.blockers == []
-    assert "Projects needing a next task" not in todd().output
+    assert "to do · 1 of 4 tasks open" in todd("projects").output
+    assert "is now done: all 4 tasks finished" in todd("done", "5", "-J").output
 
-    picks.script.append("yes")
-    todd("done", "5", "-J")
-    assert saved(1).state == State.DONE
+
+def test_a_projects_own_follow_ups_come_due_when_its_tasks_get_it_there(tickets):
+    launch(tickets)
+    todd("followup", "add", "1", "Tell", "sales", "it's", "live", "--when", "done")
+    for task_id in (2, 3):
+        assert "Follow-up due" not in todd("done", str(task_id), "-J").output
+    assert "Follow-up due: Tell sales it's live" in todd("done", "4", "-J").output
+
+
+def test_tasks_can_go_on_at_the_same_time(shell):
+    shell.answers.append(
+        answer(
+            title="Launch",
+            links=[],
+            tasks=[
+                a_task("Land it", [], []),
+                a_task("Write the docs", [], [1]),
+                a_task("Brief support", [], [1]),
+                a_task("Announce it", [], [2, 3]),
+            ],
+        )
+    )
+    todd("add", "land it, then docs and briefing support together, then announce")
+    assert [[b.id for b in saved(n).blockers] for n in (2, 3, 4, 5)] == [[], [2], [2], [3, 4]]
+    out = todd("done", "2", "-J").output
+    assert "Unblocked: #3 Write the docs" in out and "Unblocked: #4 Brief support" in out
+    now = todd().output
+    assert "Write the docs" in now and "Brief support" in now and "Announce it" not in now
+    todd("done", "3", "-J")
+    assert saved(5).blocked  # still waits on briefing support
+    todd("done", "4", "-J")
+    assert not saved(5).blocked
 
 
 def test_adding_to_a_project_waits_on_its_last_open_task(tickets):
@@ -188,14 +257,18 @@ def test_adding_to_something_that_isnt_a_project(shell):
     assert "--after only means something with --in" in todd("add", "x", "--after", "2").output
 
 
-def test_a_project_without_tasks_yet(shell):
+def test_a_project_always_has_a_task(shell):
     shell.answers.append(answer(title="Acme launch", links=[], tasks=[]))
     out = todd("add", "--project", "Acme launch").output
-    assert "Filed #1 as a project with 0 tasks" in out
-    assert "The person says this is a project" in shell.prompts[0]
+    assert "Filed #1 as a project with 1 task" in out
+    assert "Give it at least one task" in shell.prompts[0]
     assert saved(1).is_project
-    queue = todd().output
-    assert "Projects needing a next task 1" in queue and 'todd add "…" --in 1' in queue
+    first = saved(2)
+    assert first.title == "Pull the Q3 numbers from the migration dashboard"  # its next step
+    assert (first.project_id, first.state) == (1, State.TODO)
+    result = todd("edit", "2", "--in", "none")
+    assert result.exit_code == 1
+    assert "#2 is the only task in project #1, and a project has at least one task" in result.output
 
 
 def test_refiling_never_splits(tickets):
@@ -223,15 +296,31 @@ def test_block_and_unblock_by_hand(tickets):
 def test_projects_lists_each_project_and_its_tasks(tickets):
     launch(tickets)
     out = todd("projects").output
-    assert "▸ #1 Launch the live feature for Acme  3 of 3 tasks open" in out
+    assert "▸ #1 Launch the live feature for Acme  waiting · 3 of 3 tasks open" in out
     assert out.index(TITLES[0]) < out.index(TITLES[1]) < out.index(TITLES[2])
     assert "blocked by #2" in out
-    todd("drop", "1", "-J")
+
+
+def test_dropping_a_project_drops_its_open_tasks(tickets, picks):
+    launch(tickets)
+    todd("done", "2", "-J")
+    todd("drop", "1", "-J")  # Enter on the default: No
+    assert picks.asked[-1][0] == "Drop “Launch the live feature for Acme” and its 2 open tasks?"
+    assert picks.asked[-1][2] == "no"
+    assert [saved(n).state for n in (3, 4)] == [State.TODO, State.TODO]
+
+    picks.script.append("yes")
+    out = todd("drop", "1", "-J").output
+    assert "#1 to do → dropped" in out and "#3 to do → dropped" in out
+    assert [saved(n).state for n in (2, 3, 4)] == [State.DONE, State.DROPPED, State.DROPPED]
     assert "Launch the live feature" not in todd("projects").output
-    assert (
-        "Launch the live feature for Acme  3 of 3 tasks open · dropped"
-        in todd("projects", "--all").output
-    )
+    assert "dropped · 0 of 3 tasks open" in todd("projects", "--all").output
+    assert "Project #1 was dropped" in todd("add", "x", "--in", "1").output
+
+    # Bringing it back brings back what was dropped with it, not what was already finished.
+    out = todd("reopen", "1", "-J").output
+    assert "#1 dropped → to do" in out
+    assert [saved(n).state for n in (2, 3, 4)] == [State.DONE, State.TODO, State.TODO]
 
 
 def test_moving_a_task_into_a_project(tickets):
@@ -305,3 +394,74 @@ def test_a_dropped_blocker_is_out_of_the_way(tmp_path):
     assert store.get(conn, b).blocked
     store.set_state(conn, a, State.DROPPED)
     assert not store.get(conn, b).blocked
+
+
+# ── A project's state comes from its tasks ─────────────────────────────────
+
+
+def test_a_new_project_reads_as_its_first_task(tickets):
+    launch(tickets)
+    out = todd("show", "1").output
+    assert "PROJECT   WAITING" in out  # the first task waits on reviews; the rest are blocked
+    todd("start", "2", "-J")
+    assert "PROJECT   DOING" in todd("show", "1").output
+
+
+def test_a_project_is_never_moved_itself(tickets):
+    launch(tickets)
+    for verb in ("start", "wait", "review", "done", "follow", "reopen"):
+        result = todd(verb, "1")
+        assert result.exit_code == 1
+        assert "#1 is a project: its state comes from its tasks" in result.output
+    assert saved(1).state == State.TODO
+
+
+def test_following_stays_outside_projects(tickets):
+    launch(tickets)
+    result = todd("follow", "3")
+    assert result.exit_code == 1
+    assert "#3 is part of project #1, and following is for things outside projects" in result.output
+    tickets.answers.append(answer(links=[], title="The X refactor", track="following"))
+    todd("add", "following the X refactor")
+    assert saved(5).state == State.FOLLOWING
+    assert "stays outside projects" in todd("edit", "5", "--in", "1").output
+    # Said to be in a project, it's simply a task to do there.
+    tickets.answers.append(answer(links=[], title="The Y refactor", track="following"))
+    todd("add", "following the Y refactor", "--in", "1")
+    assert saved(6).state == State.TODO
+
+
+def test_something_followed_is_never_split_into_a_project():
+    filing = triage.parse(
+        answer(track="following", tasks=[a_task("One", [], []), a_task("Two", [], [1])]),
+        fallback_title="x",
+        n_links=0,
+    )
+    assert not filing.is_project and filing.track == State.FOLLOWING
+
+
+@pytest.mark.parametrize(
+    ("states", "blocked", "expected"),
+    [
+        ([State.DOING, State.WAITING], [], "doing"),
+        ([State.IN_REVIEW, State.TODO], [], "in review"),
+        ([State.WAITING, State.TODO], [], "to do"),
+        ([State.WAITING, State.TODO], [1], "waiting"),  # the to-do one is blocked
+        ([State.TODO, State.TODO], [0, 1], "blocked"),
+        ([State.INBOX], [], "to do"),
+        ([State.DONE, State.DROPPED], [], "done"),
+        ([State.DROPPED, State.DROPPED], [], "dropped"),
+        ([State.DONE, State.WAITING], [], "waiting"),
+    ],
+)
+def test_standing(states, blocked, expected):
+    tasks = [
+        Task(f"t{i}", state=state, blockers=[TaskRef(99, "x", State.TODO)] if i in blocked else [])
+        for i, state in enumerate(states)
+    ]
+    assert standing(Task("p", is_project=True), tasks).label == expected
+
+
+def test_a_dropped_project_stays_dropped_whatever_its_tasks_say():
+    project = Task("p", is_project=True, state=State.DROPPED)
+    assert standing(project, [Task("t", state=State.DOING)]).label == "dropped"

@@ -34,11 +34,12 @@ def filed(shell):
     return shell
 
 
-def test_empty_queue_says_how_to_start(shell):
+def test_with_nothing_to_do_it_says_how_to_start(shell):
     result = todd()
     assert result.exit_code == 0
-    assert "Nothing on your list." in result.output
-    assert "todd add" in result.output
+    assert "Nothing to act on right now." in result.output
+    assert 'todd "remind me' in result.output
+    assert "Nothing open." in todd("ls").output
 
 
 def test_add_captures_looks_up_and_files(filed):
@@ -63,15 +64,37 @@ def test_add_shows_what_happened(shell):
     assert "→ Pull the Q3 numbers from the migration dashboard" in out
 
 
-def test_queue_groups_by_state(filed):
+def test_now_groups_what_you_can_act_on_by_state(filed):
     todd("add", "--raw", "look at the flaky deploy job")
-    result = todd()
-    out = result.output
-    assert out.index("To do") < out.index("Inbox")
-    assert "#1" in out and "Send Priya the Q3 migration numbers" in out
-    assert "todd triage 2" in out
-    assert "PLAT-412" in out and "Slack" in out
-    assert "1 to do · 1 inbox" in out
+    for out in (todd().output, todd("now").output):
+        assert out.index("To do") < out.index("Inbox")
+        assert "#1" in out and "Send Priya the Q3 migration numbers" in out
+        assert "todd triage 2" in out
+        assert "PLAT-412" in out and "Slack" in out
+    todd("start", "1", "--local")
+    out = todd().output
+    assert out.index("Doing 1") < out.index("Inbox 1") and "To do" not in out
+
+
+def test_ls_puts_tasks_outside_a_project_under_no_project(filed):
+    todd("add", "--raw", "look at the flaky deploy job")
+    out = todd("ls").output
+    assert "▸ No project 2" in out
+    assert out.index("#1") < out.index("#2")  # to do before inbox
+    assert "to do" in out and "inbox" in out
+    assert "PLAT-412 · Slack" in out
+
+
+def test_states_says_what_every_state_means(shell):
+    out = " ".join(todd("states").output.split())
+    for label in ("inbox", "to do", "doing", "waiting", "in review", "done", "dropped"):
+        assert label in out
+    assert "following Not yours (yet)" in out
+    assert "Blocked" in out and "Not a state of its own" in out
+    assert "Its state is never set by hand" in out
+    assert "Not to be confused with following" in out
+    assert "respond where you'll reply or report back" in out
+    assert shell.prompts == []  # no Claude needed
 
 
 def test_show_has_the_message_links_and_timeline(filed):
@@ -112,10 +135,10 @@ def test_without_yes_or_a_terminal_jira_is_left_alone(filed):
     result = todd("review", "1")
     assert filed.transitions == []
     assert "Left PLAT-412 alone: todd asks before changing Jira" in result.output
-    assert "Pass -y to move it anyway, or run todd sync 1" in result.output
-    todd("sync", "1", "-y")
+    assert "Pass -y to move it anyway, or run todd push 1" in result.output
+    todd("push", "1", "-y")
     assert filed.transitions == [("PLAT-412", "In Review")]
-    assert "Jira already matches" in todd("sync", "1").output
+    assert "Jira already matches" in todd("push", "1").output
 
 
 def test_every_jira_change_is_asked_about_and_no_is_the_default(filed, picks):
@@ -125,7 +148,7 @@ def test_every_jira_change_is_asked_about_and_no_is_the_default(filed, picks):
     question, keys, default = picks.asked[0]
     assert (question, keys, default) == ("Move PLAT-412 to In Review?", ["no", "yes"], "no")
     picks.script.append("yes")
-    todd("sync", "1")
+    todd("push", "1")
     assert filed.transitions == [("PLAT-412", "In Review")]
 
 
@@ -253,7 +276,8 @@ def test_wait_records_on_what(filed):
     result = todd("wait", "1", "Priya", "to", "confirm", "the", "numbers")
     assert "waiting on Priya to confirm the numbers" in result.output
     assert saved().waiting_on == "Priya to confirm the numbers"
-    assert "on Priya to confirm the numbers" in todd().output
+    assert "Not yours to act on now: 1 waiting" in todd().output
+    assert "waiting on Priya to confirm the numbers" in todd("ls").output
     todd("start", "1", "--local")
     assert saved().waiting_on is None
 
@@ -301,7 +325,7 @@ def test_unknown_task(shell):
 
 def test_filters(filed):
     assert "#1" in todd("ls", "--area", "platform").output
-    assert "Nothing on your list." in todd("ls", "--kind", "review").output
+    assert "Nothing open." in todd("ls", "--area", "hiring").output
     todd("done", "1", "--local")
     assert "#1" not in todd().output
     assert "#1" in todd("ls", "--all").output
@@ -354,8 +378,8 @@ def test_claude_is_run_outside_the_project_and_without_tools(filed):
     call = filed.ran("-p")[0]
     assert call.argv[call.argv.index("--tools") + 1] == ""
     schema = json.loads(call.argv[call.argv.index("--json-schema") + 1])
-    assert schema["properties"]["kind"]["enum"][0] == "do"
-    assert load("claude_envelope")["structured_output"]["kind"] == "reply"
+    assert schema["properties"]["track"]["enum"] == ["todo", "waiting", "following"]
+    assert "kind" not in schema["properties"]
 
 
 # ── Pull request stacks and nicknames ───────────────────────────────────────
@@ -366,7 +390,6 @@ def test_a_stacked_pull_request_brings_the_whole_stack(shell):
         dict(
             load("claude_envelope")["structured_output"],
             title="Get Priya's billing cutover stack landed",
-            kind="review",
             links=[
                 {"index": i, "role": "deliverable", "note": None, "author": None} for i in (1, 2, 3)
             ],
@@ -385,7 +408,7 @@ def test_a_stacked_pull_request_brings_the_whole_stack(shell):
         "acme/billing#88",
     ]
     assert {link.role for link in task.links} == {Role.DELIVERABLE}
-    assert "stack of 3" in todd().output
+    assert "stack 17 (3 PRs)" in todd().output
 
 
 def test_show_groups_a_stack_bottom_to_top(shell):
@@ -432,7 +455,9 @@ def test_person_filter_understands_logins_and_nicknames(shell):
     todd("add", "review the stack", PR_URL)  # Claude records "Priya"; the PRs are by priya-n
     assert "#1" in todd("ls", "--person", "priya-n").output
     assert "#1" in todd("ls", "--person", "Priya").output
-    assert "Nothing on your list." in todd("ls", "--person", "zed").output
+    assert "Nothing open." in todd("ls", "--person", "zed").output
+    assert "#1" in todd("now", "--person", "Priya").output
+    assert "Nothing to act on" in todd("now", "--person", "zed").output
 
 
 def test_doctor_reads_a_stack(shell):
