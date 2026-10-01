@@ -1,0 +1,153 @@
+# Field tests
+
+todd was built on a machine without `acli`, a work Jira or a work Slack, so these parts have
+only been checked against made-up fixtures:
+
+- reading and moving Jira tickets through `acli`
+- Slack links opening in the Slack app
+- running `claude -p` under your employer's Claude Code setup
+- pull request stacks on your work GitHub, if that's GitHub Enterprise
+
+These *were* checked live: headless `claude -p` with todd's schema, and reading real native
+stacks (`github/gh-stack`, `cli/cli`) through `gh`. The six example captures in section 8 also
+ran through the real Claude against a stand-in `acli` that served made-up tickets.
+
+Run these on the work Mac. If something fails, send back the command, its output, and
+`todd doctor` (redact anything sensitive).
+
+## 1. Setup
+
+```sh
+uv tool install --editable .
+todd doctor --claude
+```
+
+Expect ✓ for `config`, `database`, `claude`, `claude -p`, `acli`, `jira auth` and `gh`.
+
+- [ ] Everything is ✓. How long did `claude -p` take?
+- [ ] If your Claude Code runs hooks (notifications, sounds) or your CLAUDE.md seems to affect
+      todd's filings, add `args = ["--safe-mode"]` under `[claude]` (`todd config --edit`) and
+      run `todd doctor --claude` again.
+
+## 2. Reading a real Jira ticket
+
+```sh
+todd doctor --jira PROJ-123
+```
+
+- [ ] Summary, status, type and assignee are right.
+- [ ] The description's first line is readable text, not JSON.
+- [ ] The URL is right. If it says to set `site`, add `site = "yourcompany.atlassian.net"`
+      under `[jira]`.
+
+If anything is off, please send the raw output:
+
+```sh
+acli jira workitem view PROJ-123 --json --fields key,issuetype,summary,status,assignee,priority,description | head -c 4000
+```
+
+## 3. Configuration
+
+```sh
+todd config --init && todd config --edit
+```
+
+Set `site`, `keys` (your project keys) and `[jira.status]` to your workflow's exact status
+names. Add per-project overrides where workflows differ, then:
+
+```sh
+todd config
+```
+
+- [ ] The state → status mapping looks right.
+
+## 4. Capturing
+
+Use a real Slack message and a real ticket:
+
+```sh
+todd add "what you'd normally jot down" <slack link> PROJ-123
+```
+
+When todd asks, paste the Slack message and press Ctrl-D.
+
+- [ ] The ticket line shows ✓ with the right summary and status.
+- [ ] The Slack line says "message text kept".
+- [ ] The filed card makes sense: title, next step, kind, project, priority, due date, people.
+      Note anything Claude gets consistently wrong; that's prompt tuning.
+- [ ] `todd show <n>` shows the message under its link, with who wrote it.
+- [ ] `todd add -e` opens your editor and captures what you write.
+
+## 5. Moving a ticket
+
+Use a ticket that's safe to move, ideally a throwaway one.
+
+```sh
+todd start <n>       # asks "Move KEY to In Progress?": pick Yes with → then Enter
+todd review <n>      # press Enter on No this time: the ticket shouldn't move
+todd done <n> -y     # no question; it just moves
+todd drop <n> -J     # no question; Jira untouched
+```
+
+- [ ] The question starts on No, ←/→ and Enter work, and the line ends up showing your answer.
+- [ ] Each Yes moved the ticket in Jira to the mapped status; each No left it alone.
+- [ ] Typing Enter quickly, before the question appears, doesn't answer it.
+- [ ] Put a status your workflow can't reach into the mapping, then move a task: the error is
+      readable, and the todd state still changed.
+- [ ] `todd sync <n> -y` fixes a ticket that has drifted.
+
+## 6. Replying in Slack
+
+On `todd done <n>` for a task with a Slack link:
+
+- [ ] `o` opens the message in the Slack app, not just the browser.
+- [ ] `d` drafts a reply that sounds like you, copies it, and offers to open the thread.
+
+## 7. Pull request stacks at work
+
+```sh
+todd doctor --pr <a stacked PR at work>
+todd doctor --pr <an unstacked PR>
+```
+
+- [ ] The stacked PR lists every member, bottom to top, with status and reviews.
+- [ ] If you're on GitHub Enterprise Server and the stack line says "couldn't check", send me
+      the detail. todd then reads the PR alone, which is safe, but it misses the rest of the stack.
+- [ ] `todd add "review <name>'s stack" <PR url>` adds every PR in the stack, and `todd show`
+      groups them.
+
+## 8. Your six kinds of capture
+
+Try each with real links, and note anything Claude gets wrong.
+
+- [ ] `todd add "Currently waiting on review from this PR stack" <PR> "related to these tickets" <KEY> <KEY>`:
+      filed as *waiting*. The queue says "on reviews from …" with the right people, and
+      `todd show` has the reviewer table. Is the summary readable when many people are pending?
+- [ ] `todd add <KEY> "by Friday, see also" <slack> <slack>` (Enter to skip pasting): the Slack
+      links show as *reference*, and `todd done` doesn't offer to reply in them.
+      `todd role <n> 2 reply` changes that.
+- [ ] The RFC one: two follow-ups, one for asking Mike to review (when in review) and one for
+      warning him on Friday, unless it's in review by then.
+- [ ] `todd add "Following" <slack> "…might end up on my plate"`: it's not in `todd`, it is in
+      `todd following` with a check-in date, and the check-in shows in `todd` when it's due.
+- [ ] `todd add "I need to complete" <KEY> "and tell Theo A when I'm done"`: titled from the ticket.
+      On `todd done`, it offers to draft the message to Theo.
+- [ ] `todd add "I need to address" <slack> "and tell Mary S when I'm done"`, without pasting:
+      todd asks you for a title instead of inventing one.
+
+## 9. Moving, links and Jira failures
+
+- [ ] `todd move <n> <state>` works from any state to any other. `--no-jira` leaves the ticket.
+- [ ] Map a state to a status your workflow can't reach and move a task there. todd says it
+      failed and prints the ticket's link on a line of its own. Can you ⌘-click it?
+- [ ] `todd links <n>`: can you ⌘-click every line, including long URLs?
+- [ ] `todd refresh`: statuses and reviewers catch up with what changed in Jira and GitHub.
+
+## 10. Nicknames
+
+```sh
+todd nick <a colleague's login> <what you call them>
+```
+
+- [ ] `todd show` and `todd doctor --pr` show the name instead of the login.
+- [ ] `todd ls --person <name>` and `--person <login>` both find their tasks.

@@ -1,0 +1,19 @@
+[
+  {
+    "id": 1433001,
+    "number": 17,
+    "node_id": "PRS_kwDOAcmeBill4AFeE",
+    "url": "https://api.github.com/repos/acme/billing/stacks/17",
+    "base": { "ref": "main" },
+    "open": true,
+    "created_at": "2026-09-24T15:02:11Z",
+    "pull_requests": [
+      { "number": 85, "state": "closed", "draft": false, "merged_at": "2026-09-28T18:40:02Z",
+        "head": { "ref": "priya/billing-config-split", "sha": "0b1c7e2" } },
+      { "number": 86, "state": "open", "draft": false, "merged_at": null,
+        "head": { "ref": "priya/billing-worker-cluster-b", "sha": "5d0e9aa" } },
+      { "number": 88, "state": "open", "draft": true, "merged_at": null,
+        "head": { "ref": "priya/billing-prod-cutover", "sha": "c33f1b4" } }
+    ]
+  }
+]

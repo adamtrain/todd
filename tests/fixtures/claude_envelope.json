@@ -1,0 +1,41 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 1885,
+  "num_turns": 2,
+  "stop_reason": "tool_use",
+  "session_id": "28904747-d6c8-4c94-b32d-1b6d5bd66340",
+  "total_cost_usd": 0.016016,
+  "result": "{\"title\":\"Send Priya the Q3 migration numbers\"}",
+  "structured_output": {
+    "title": "Send Priya the Q3 migration numbers",
+    "needs_title": false,
+    "track": "todo",
+    "follow_ups": [],
+    "next_action": "Pull the Q3 numbers from the migration dashboard",
+    "kind": "reply",
+    "project": "Platform",
+    "priority": "high",
+    "due": "2026-10-01",
+    "due_hint": "before Thursday's sync",
+    "people": [
+      "Priya"
+    ],
+    "waiting_on": null,
+    "links": [
+      {
+        "index": 1,
+        "role": "respond",
+        "note": "Priya's ask in a DM",
+        "author": "Priya"
+      },
+      {
+        "index": 2,
+        "role": "ticket",
+        "note": "the billing migration story",
+        "author": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "85": {
+    "number": 85, "title": "Split billing worker config per cluster",
+    "url": "https://github.com/acme/billing/pull/85", "state": "MERGED", "isDraft": false,
+    "body": "Pulls cluster-specific settings out of worker.yaml so cluster-b can differ.",
+    "baseRefName": "main", "headRefName": "priya/billing-config-split",
+    "reviewDecision": "APPROVED", "author": { "login": "priya-n" },
+    "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+    "latestReviews": { "nodes": [{ "author": { "login": "sam-k" }, "state": "APPROVED", "body": "" }] },
+    "reviews": { "nodes": [{ "author": { "login": "sam-k" }, "state": "APPROVED", "body": "" }] },
+    "reviewRequests": { "nodes": [] },
+    "reviewThreads": { "nodes": [] },
+    "comments": { "nodes": [] }
+  },
+  "86": {
+    "number": 86, "title": "Move billing-worker to cluster-b",
+    "url": "https://github.com/acme/billing/pull/86", "state": "OPEN", "isDraft": false,
+    "body": "Deploys billing-worker to cluster-b behind a flag.\n\n- staging first\n- then production",
+    "baseRefName": "priya/billing-config-split", "headRefName": "priya/billing-worker-cluster-b",
+    "reviewDecision": "CHANGES_REQUESTED", "author": { "login": "priya-n" },
+    "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }] },
+    "latestReviews": { "nodes": [
+      { "author": { "login": "sam-k" }, "state": "CHANGES_REQUESTED", "body": "Needs a rollback plan before this goes to prod." },
+      { "author": { "login": "adamtrain" }, "state": "COMMENTED", "body": "" }
+    ] },
+    "reviews": { "nodes": [
+      { "author": { "login": "sam-k" }, "state": "CHANGES_REQUESTED", "body": "Needs a rollback plan before this goes to prod." },
+      { "author": { "login": "adamtrain" }, "state": "COMMENTED", "body": "" }
+    ] },
+    "reviewRequests": { "nodes": [{ "requestedReviewer": { "__typename": "Team", "combinedSlug": "acme/platform-reviewers" } }] },
+    "reviewThreads": { "nodes": [
+      { "isResolved": false, "comments": { "nodes": [
+        { "author": { "login": "sam-k" }, "body": "What happens to in-flight jobs during the switch?", "path": "deploy/worker.yaml" } ] } },
+      { "isResolved": true, "comments": { "nodes": [
+        { "author": { "login": "adamtrain" }, "body": "nit: typo", "path": "README.md" } ] } }
+    ] },
+    "comments": { "nodes": [
+      { "author": { "login": "priya-n" }, "body": "@adamtrain could you take a look too? Want this in before Thursday." }
+    ] }
+  },
+  "88": {
+    "number": 88, "title": "Cut production over to cluster-b",
+    "url": "https://github.com/acme/billing/pull/88", "state": "OPEN", "isDraft": true,
+    "body": "Flips the flag in production. Don't merge until #86 has soaked in staging.",
+    "baseRefName": "priya/billing-worker-cluster-b", "headRefName": "priya/billing-prod-cutover",
+    "reviewDecision": "REVIEW_REQUIRED", "author": { "login": "priya-n" },
+    "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "PENDING" } } }] },
+    "latestReviews": { "nodes": [] },
+    "reviews": { "nodes": [] },
+    "reviewRequests": { "nodes": [{ "requestedReviewer": { "__typename": "User", "login": "adamtrain" } }] },
+    "reviewThreads": { "nodes": [] },
+    "comments": { "nodes": [] }
+  },
+  "90": {
+    "number": 90, "title": "Bump httpx", "url": "https://github.com/acme/billing/pull/90",
+    "state": "OPEN", "isDraft": false, "body": "", "baseRefName": "main", "headRefName": "deps/httpx",
+    "reviewDecision": "APPROVED", "author": { "login": "dependabot" },
+    "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
+    "latestReviews": { "nodes": [{ "author": { "login": "sam-k" }, "state": "APPROVED", "body": "" }] },
+    "reviews": { "nodes": [] }, "reviewRequests": { "nodes": [] },
+    "reviewThreads": { "nodes": [] }, "comments": { "nodes": [] }
+  }
+}

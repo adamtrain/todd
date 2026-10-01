@@ -1,0 +1,256 @@
+<h1 align="center">todd</h1>
+
+<p align="center">
+  <b>A work to-do list for your terminal that files tasks with Claude and keeps Jira in step.</b><br>
+  Say what needs doing, paste the links, and get back a filed task with a next step, not another saved Slack message.
+</p>
+
+<p align="center">
+  <img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white">
+  <a href="https://github.com/astral-sh/uv"><img alt="uv" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json"></a>
+  <a href="https://github.com/astral-sh/ruff"><img alt="Ruff" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json"></a>
+</p>
+
+## Why todd
+
+- **Capture in one line.** `todd add "reply to Priya about the Q3 numbers" <slack link> PLAT-412`.
+  Links and Jira keys can go anywhere in the arguments.
+- **Claude files it.** todd reads what it can first: Jira tickets through `acli`, pull requests
+  through `gh`. Then one Claude call fills in the title, the next concrete step, the kind of work,
+  the project, the priority, any due date ("before Thursday's sync" becomes a date), the people
+  involved, and what each link is for.
+- **Slack without a Slack app.** todd can't read Slack, so it asks you to paste the message. The
+  text is kept with that link and marked as *that* message, so the context survives even if the
+  link goes missing.
+- **Pull request stacks count as one thing.** Link any pull request in one of GitHub's native
+  stacks and todd brings in the whole stack: every PR's description, reviews, open threads,
+  conversation and checks. Claude files it as one piece of work, and the task references every
+  PR in it.
+- **Who you're waiting on.** For a task waiting on review, todd tallies every pending review
+  request across the PRs, like "on reviews from Nik (4), Will M (3)". `todd show` has a
+  reviewer-by-PR table.
+- **Follow-ups you promised.** "Tell Theo when I'm done" and "if the doc isn't ready Friday, tell
+  Mike review slips" become follow-ups. They come due when the task reaches a state or on a
+  date, and drop away when they stop mattering (the doc went out for review). todd offers to draft
+  the message when one comes due.
+- **Things to follow, not do.** "Following <link>, might end up on my plate" goes on a separate
+  `todd following` list with a check-in date, out of your queue until the check-in comes due.
+- **Work the queue; Jira follows if you say so.** Move a task from any state to any other.
+  Before any ticket changes, todd asks about that ticket with an arrow-key Yes/No, starting on
+  No. `-y` and `--no-jira` skip the question either way. If Jira refuses, todd tells you and
+  prints the ticket's link so you can do it yourself.
+- **You're told where to reply.** When a task is done or goes into review, todd shows the Slack
+  message it came from and offers to open it or draft your reply with Claude (copied to your
+  clipboard). Slack links you only gave as context don't count unless you say so.
+- **No made-up titles.** When Claude can't tell what something is (say, a Slack link todd can't
+  read, with nothing pasted), it says so, and todd asks you for a title instead of inventing a
+  vague one.
+- **Your names for people.** `todd nick priya-n Priya` and GitHub logins turn into the names you
+  use everywhere, including in what Claude writes.
+
+## Install
+
+You'll need [uv](https://docs.astral.sh/uv/), plus:
+
+- [Claude Code](https://code.claude.com), signed in. todd calls `claude -p`, so it runs on your
+  Claude Code account and needs no API key.
+- The [Atlassian CLI](https://developer.atlassian.com/cloud/acli/) (`acli`), signed in with
+  `acli jira auth login`, for Jira.
+- Optionally, the [GitHub CLI](https://cli.github.com) (`gh`), signed in, for pull requests and stacks.
+
+```sh
+uv tool install git+https://github.com/adamtrain/todd
+todd doctor --claude          # checks claude, acli and gh are ready
+```
+
+To hack on it, clone it and install it in editable mode, so changes take effect right away:
+
+```sh
+git clone https://github.com/adamtrain/todd && cd todd
+uv tool install --editable .
+```
+
+## Usage
+
+```sh
+todd                                   # your queue, with any follow-ups that are due
+todd add "reply to Priya re: Q3 numbers" https://acme.slack.com/archives/D…/p… PLAT-412
+todd add "Currently waiting on review from this stack" <PR url> "for" PLAT-412 PLAT-413
+todd add PLAT-234 "by Friday, see also" <slack link> <slack link>
+todd add "I need to complete" PLAT-123 "and tell Theo A when I'm done"
+todd add "Following" <slack link> "about the ledger refactor, might end up on my plate"
+todd add -e                            # write it in your editor (or: todd add, with nothing else)
+pbpaste | todd add                     # piped text works too
+todd show 12                           # links, saved messages, reviewers, follow-ups, timeline
+todd start 12                          # doing        (Jira → In Progress)
+todd wait 12 Priya to confirm numbers  # waiting, and on what
+todd review 12                         # in review    (Jira → In Review)
+todd done 12 sent the sheet            # done         (Jira → Done, follow-ups, reply in Slack)
+todd move 12 following --no-jira       # any state to any other; leave Jira be this time
+todd following                         # what you're keeping an eye on
+todd followup                          # everything you owe people
+todd links 12                          # every link, one per line, nothing else
+todd reply 12                          # where to reply, with an offer to draft it
+```
+
+The states are `inbox` (captured, not filed yet), `todo`, `doing`, `waiting`, `in_review`,
+`done`, `dropped` and `following`. `todd move` goes from any state to any other, and `start`,
+`wait`, `review`, `done`, `drop`, `follow` and `reopen` are shortcuts. Each takes a note
+(`todd done 12 shipped it`), `-y` to update Jira without asking, `--no-jira` to leave Jira
+alone without asking, and `--local` to leave Jira and Slack alone. Adding a task never moves its
+tickets. If one should match, use `todd sync`.
+
+### Changing Jira
+
+Every time a state change would move a ticket, todd shows the move and asks about it:
+
+```text
+  Jira PLAT-412  In Progress → Done
+  Move PLAT-412 to Done?   No   Yes    ←/→ Enter
+```
+
+The highlight starts on **No**. ←/→ (or Tab) move it and Enter picks; typing `y` or `n` jumps
+to that answer but still waits for Enter. Anything typed before the question appeared is
+ignored, so an early Enter can't answer it. Several tickets get a question each. Where todd
+can't ask (a script, a pipe), it leaves Jira alone and says how to catch up: `-y`, or
+`todd sync 12` later. The other choices todd offers (reply in Slack, follow-ups) work the same
+way.
+
+Other commands:
+
+| Command | What it does |
+| --- | --- |
+| `todd ls [--all] [-p project] [-k kind] [--person name]` | The queue, filtered. `--all` includes done and dropped. |
+| `todd triage [id]` | File a task again (say, after adding links), or everything still in your inbox. |
+| `todd link 12 <links…> [-q text]` | Attach more links. |
+| `todd note 12 <text>` | Add to the timeline. |
+| `todd edit 12 --due fri --priority high --project none …` | Correct what Claude filed. |
+| `todd sync 12` | Bring the Jira ticket in line with the task's state. |
+| `todd refresh [id]` | Re-read tickets and pull requests (statuses, reviewers, stacks) without asking Claude. |
+| `todd role 12 3 reply` | Say what link 3 is for. `reply` marks where you'll reply; refiling keeps it. |
+| `todd links 12 [--labels]` | Print the links bare, one per line, so your terminal can make them clickable. |
+| `todd followup add 12 "Tell Theo" [--to Theo] [--on fri \| --when done] [--unless in_review]` | Add a follow-up yourself. |
+| `todd followup done\|drop\|snooze N` | Close a follow-up (↪N), or move it to another day (`snooze 4 +7`). |
+| `todd nick [login] [name…] [--remove]` | List, set or forget nicknames. |
+| `todd config [--init] [--edit]` | Where todd keeps things, and what it's set to do. |
+| `todd doctor [--claude] [--jira KEY] [--pr URL]` | Check the tools todd uses, and what it makes of a real ticket or PR. |
+
+### Keeping a Slack message with its link
+
+When you `todd add` a Slack link in a terminal, todd asks you to paste the message: press Enter
+to skip, or paste and finish with Ctrl-D (or two empty lines). You can also pass it with
+`-q "…"`, one per Slack link and in order.
+
+In the editor (`todd add -e`) or piped text, put each link on its own line. Whatever sits under a
+link, up to the next link, is that link's text:
+
+```text
+Reply to Priya with the Q3 migration numbers
+
+https://acme.slack.com/archives/D024BE91L/p1790776800123456
+Hey, can you send me the Q3 migration numbers before Thursday's sync?
+
+PLAT-412
+```
+
+Slack links you capture are context by default. Say where you'll need to reply with
+`--reply-in <link>` when you add the task, or `todd role 12 3 reply` afterwards.
+
+### Follow-ups
+
+Mention them the way you'd say them, and Claude writes them down:
+
+| You say | todd keeps |
+| --- | --- |
+| "…and tell Theo A when I'm done" | ↪ Tell Theo A that PLAT-123 is done, due when the task is done |
+| "told Mike R I'd ask him to review it this week, but it may slip" | ↪ Ask Mike R to review the RFC, due when it's in review. ↪ Tell Mike R review slips to next week, due Friday unless it's in review by then. |
+| "Following <link>…" | ↪ Check in on it, due on the day you said, or two weeks out |
+
+Follow-ups that are due show at the top of your queue, wherever their task is, even one you're
+only following. When a task reaches the state a follow-up waits for, todd offers to draft the
+message with Claude (copied to your clipboard), mark it done, or keep it for later. A dated
+follow-up that no longer matters (the doc went out for review before Friday) closes itself.
+
+### Waiting on reviews
+
+Pull requests carry their reviewers: who's been asked and hasn't reviewed yet, who approved, and
+who wants changes. A waiting task sums up the pending requests across all its PRs, busiest
+reviewer first. `todd refresh` brings reviewers and statuses up to date.
+
+### Pull request stacks
+
+todd uses GitHub's native stacked pull requests (public preview since July 2026). When you link
+a pull request, todd asks GitHub whether it's in a stack. If it is, todd reads every member in
+one query and adds the ones you didn't link, numbered bottom to top. Claude sees them as one
+stack: what has landed, what's waiting on review, what has changes requested or failing checks,
+and which threads are unresolved. `todd show` lists them together.
+
+### Nicknames
+
+```sh
+todd nick priya-n Priya                # @priya-n is Priya
+todd nick acme/platform-reviewers "Platform reviewers"
+todd nick                              # everyone
+todd nick priya-n --remove
+```
+
+Nicknames live in `~/.config/todd/nicknames.toml`, which todd writes itself. They're used when
+todd shows pull request authors and reviewers, when it tells Claude who's who, and by
+`todd ls --person`, which matches a login or a name.
+
+## Configuration
+
+`todd config --init` writes `~/.config/todd/config.toml` with every setting commented out. The
+ones you're most likely to want:
+
+```toml
+[jira]
+site = "acme.atlassian.net"   # so bare keys like PLAT-412 become links
+keys = ["PLAT", "OPS"]        # project keys to spot inside your task text
+
+# The Jira status a ticket moves to when its task enters each state.
+[jira.status]
+doing = "In Progress"
+in_review = "In Review"
+done = "Done"
+
+# Projects with another workflow can override any state; "" leaves Jira alone.
+[jira.projects.OPS.status]
+in_review = ""
+done = "Closed"
+
+# Projects Claude should file tasks under.
+[projects]
+platform = "Infrastructure, CI, migrations"
+hiring = "Interviews, debriefs, hiring loops"
+```
+
+`[claude]` takes `model`, `effort` (default `low`), `timeout` and extra `args` for `claude -p`.
+`[slack]` controls whether todd asks for message text and which states offer to reply.
+`[following] check_in_days` (default 14) sets when to check back on something you follow, if you
+didn't say. `[jira.status]` can map any state, `following` and `waiting` included.
+
+When a task has several Jira links, only the one Claude marked as *the ticket* moves. A lone
+Jira link moves unless Claude called it background.
+
+## Where things live
+
+| | Default | Override |
+| --- | --- | --- |
+| Tasks | `~/.config/todd/todd.sqlite` | `--db` or `$TODD_DB` |
+| Settings | `~/.config/todd/config.toml` | `--config` or `$TODD_CONFIG` |
+| Nicknames | `nicknames.toml` beside the settings | |
+
+`$XDG_CONFIG_HOME` is respected.
+
+## Development
+
+```sh
+uv run pytest
+uv run ruff check && uv run ruff format --check
+uv run ty check
+```
+
+The tests never reach Jira, Slack, GitHub or Claude. `tests/conftest.py` fakes every program todd
+runs, using made-up fixtures in the same shapes the real tools return. For checks against the
+real tools, see [docs/field-tests.md](docs/field-tests.md).

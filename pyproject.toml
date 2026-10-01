@@ -1,0 +1,55 @@
+[project]
+name = "todd"
+version = "0.1.0"
+description = "A work to-do list for your terminal that files tasks with Claude and keeps Jira in step."
+readme = "README.md"
+authors = [
+    { name = "Adam Train", email = "adam@adametrain.com" }
+]
+requires-python = ">=3.13"
+keywords = ["todo", "tasks", "jira", "slack", "claude", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Scheduling",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "rich>=15.0.0",
+    "typer>=0.27.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/adamtrain/todd"
+Repository = "https://github.com/adamtrain/todd"
+Issues = "https://github.com/adamtrain/todd/issues"
+
+[project.scripts]
+todd = "todd.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.15,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+    "ty>=0.0.84",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "C4", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/todd/migrations.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
