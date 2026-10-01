@@ -135,6 +135,13 @@ todd doctor --pr <an unstacked PR>
       the detail. todd then reads the PR alone, which is safe, but it misses the rest of the stack.
 - [ ] `todd add "review <name>'s stack" <PR url>` adds every PR in the stack, and `todd show`
       groups them.
+- [ ] For a PR whose title has a ticket in parentheses, like `(PLAT-412) …` or `fix(PLAT-412): …`:
+      `todd doctor --pr <url>` says "ticket in its title: PLAT-412", and `todd add "…" <PR url>`
+      (no ticket given) shows `+ PLAT-412 · … · from the title of #N` and files it as the ticket.
+      `todd done <n>` then asks about moving it.
+- [ ] If your PR titles put the ticket somewhere else (square brackets, no parentheses), tell me
+      the shape and I'll match it.
+- [ ] A PR with something else in parentheses, like `(WIP)` or `(UTF-8)`, adds no ticket.
 
 ## 8. Your six kinds of capture
 

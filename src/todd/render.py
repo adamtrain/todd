@@ -1174,9 +1174,16 @@ def capture_line(capture: Capture, origin: str, w: int) -> Text:
 
 
 def lookup_line(
-    link: Link, problem: str | None, w: int, *, names: Nicknames = NO_NAMES, new: bool = False
+    link: Link,
+    problem: str | None,
+    w: int,
+    *,
+    names: Nicknames = NO_NAMES,
+    new: bool = False,
+    via: str | None = None,
 ) -> Text:
-    """One line per link after todd has tried to look it up."""
+    """One line per link after todd has tried to look it up. `via` is the pull request whose
+    title named this ticket."""
     color = {LinkKind.JIRA: JIRA, LinkKind.SLACK: SLACK}.get(link.kind, "")
     line = Text("  ")
     if problem:
@@ -1205,4 +1212,6 @@ def lookup_line(
             line.append(f" · {link.status}", style=FAINT)
         if link.kind == LinkKind.GITHUB and link.author:
             line.append(f" · {names.name(link.author)}", style=FAINT)
+    if via:
+        line.append(f" · from the title of #{via.rsplit('#', 1)[-1]}", style=FAINT)
     return line

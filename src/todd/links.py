@@ -12,6 +12,7 @@ from todd.models import Link, LinkKind
 
 JIRA_KEY = re.compile(r"[A-Z][A-Z0-9_]{1,9}-[1-9][0-9]*")
 _JIRA_KEY_IN_TEXT = re.compile(r"(?<![\w/.-])([A-Z][A-Z0-9_]{1,9})-([1-9][0-9]*)(?![\w-])")
+_JIRA_KEY_IN_PARENTHESES = re.compile(r"\(\s*(" + JIRA_KEY.pattern + r")\s*\)")
 _URL_IN_TEXT = re.compile(r"<?(https?://[^\s<>|]+)")
 _SLACK_PERMALINK = re.compile(r"/archives/([A-Z0-9]+)/p(\d{10})(\d{6})")
 _GITHUB = re.compile(r"^/([\w.-]+)/([\w.-]+)/(pull|issues)/(\d+)")
@@ -111,6 +112,14 @@ def jira_key_in_url(url: str) -> str | None:
     if JIRA_KEY.fullmatch(selected):
         return selected
     return None
+
+
+def ticket_in_title(title: str | None) -> str | None:
+    """The Jira key a pull request's title names in parentheses, as in "(PLAT-412) Move the
+    workers" or "fix(PLAT-412): move the workers": the first parenthesized thing that is
+    exactly a key (capitals, a hyphen, a number)."""
+    found = _JIRA_KEY_IN_PARENTHESES.search(title or "")
+    return found.group(1) if found else None
 
 
 def from_url(url: str) -> Link:

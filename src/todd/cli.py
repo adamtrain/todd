@@ -573,7 +573,7 @@ def _set_title(conn: sqlite3.Connection, task_id: int, title: str) -> None:
 def _print_lookups(session: Session, found: list[triage.Gathered], w: int) -> None:
     for g in found:
         problem = str(g.error) if g.error else None
-        err.print(render.lookup_line(g.link, problem, w, names=session.names, new=g.new))
+        err.print(render.lookup_line(g.link, problem, w, names=session.names, new=g.new, via=g.via))
 
 
 @app.command()
@@ -641,6 +641,8 @@ def add(
 
     Pass links as arguments. For a Slack link, todd asks you to paste the message
     (or use [bold]-q[/]) so its text stays with the link even though todd can't read Slack.
+    A pull request brings the rest of its stack, and the Jira ticket its title names in
+    parentheses, like "(PLAT-412) Move the workers".
     With no arguments, todd opens your editor, or reads piped text.
     """
     session = _session(ctx)
@@ -1930,7 +1932,11 @@ def _pull_one(
             g.changed = pulling.changes(before.get(g.link.ref or g.link.url or ""), g.link)
             if g.changed or g.error:
                 problem = str(g.error) if g.error else None
-                err.print(render.lookup_line(g.link, problem, w, names=session.names, new=g.new))
+                err.print(
+                    render.lookup_line(
+                        g.link, problem, w, names=session.names, new=g.new, via=g.via
+                    )
+                )
                 for change in g.changed:
                     err.print(Text(f"      {change}", style=render.FAINT))
     new = any(g.changed for g in found)
@@ -2571,6 +2577,8 @@ def _doctor_pr(url: str, names: Nicknames) -> None:
             detail.append(f"{render.plural(len(pr.open_threads), 'open thread')}")
         if pr.comments:
             detail.append(render.plural(len(pr.comments), "comment"))
+        if key := linking.ticket_in_title(pr.title):
+            detail.append(f"ticket in its title: {key}")
         out.print(Text("     " + " · ".join(detail), style=render.FAINT))
 
 

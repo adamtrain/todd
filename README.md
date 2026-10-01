@@ -40,6 +40,8 @@
   stacks and todd brings in the whole stack: every PR's description, reviews, open threads,
   conversation and checks. Claude files it as one piece of work, and the task references every
   PR in it.
+- **Tickets come with their pull requests.** A pull request titled "(PLAT-412) Move the
+  workers" brings PLAT-412 along as its ticket, so you don't have to link it yourself.
 - **Who you're waiting on.** For a task waiting on review, todd tallies every pending review
   request across the PRs, like "on reviews from Nik (4), Will M (3)". `todd show` has a
   reviewer-by-PR table.
@@ -356,6 +358,28 @@ a pull request, todd asks GitHub whether it's in a stack. If it is, todd reads e
 one query and adds the ones you didn't link, numbered bottom to top. Claude sees them as one
 stack: what has landed, what's waiting on review, what has changes requested or failing checks,
 and which threads are unresolved. `todd show` lists them together.
+
+### Tickets named in pull request titles
+
+When a pull request's title has a Jira key in parentheses, as in `(PLAT-412) Move the workers`,
+`fix(PLAT-412): move the workers` or `Move the workers (PLAT-412)`, todd adds that ticket to the
+task as the ticket that tracks the pull request. That goes for every pull request in a stack,
+and in a project the ticket goes to the same task as its pull request. So this is enough:
+
+```sh
+todd add "waiting on review" https://github.com/acme/billing/pull/86
+```
+
+```text
+  ✓ acme/billing#86 (2 in its stack) · (PLAT-412) Move billing-worker to cluster-b · open · Priya
+  + PLAT-412 · Migrate billing workers to the new cluster · In Progress · from the title of #86
+```
+
+A key is capitals, a hyphen and a number, and it's the first thing in parentheses that is
+exactly that. Other things look the same ("(UTF-8)"), so the ticket is only added if Jira can
+read it, or if its project is one you list under `[jira] keys`. A ticket you linked yourself
+isn't added twice, `todd pull` picks up a ticket added to a title later, and as always, adding
+a task never changes anything in Jira.
 
 ### Nicknames
 

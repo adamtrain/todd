@@ -18,7 +18,7 @@ from todd.config import Config
 from todd.db import tx
 from todd.errors import ToddError
 from todd.jira import Jira
-from todd.links import github_item, slack_message
+from todd.links import from_key, github_item, slack_message, ticket_in_title
 from todd.models import (
     EntryKind,
     Followup,
@@ -42,7 +42,9 @@ class Gathered:
     facts: dict[str, str] = field(default_factory=dict)
     body: str | None = None  # a ticket description, or a pull request's description and reviews
     error: ToddError | None = None
-    new: bool = False  # a pull request found through its stack, not yet on the task
+    # Not yet on the task: a pull request found through its stack, or a ticket through a title.
+    new: bool = False
+    via: str | None = None  # for a ticket named in a pull request's title: that pull request
     stack: github.Stack | None = None
     viewer: str | None = None  # your GitHub login, as GitHub reported it
     changed: list[str] = field(default_factory=list)  # for todd pull: what's new since last time
@@ -132,6 +134,9 @@ def gather(
     read, and the ones not already linked come back marked `new`. Members of a stack are
     returned together, bottom to top, where the first of them appeared. `known` are links the
     task already has, so stack members among them are updated rather than added again.
+
+    A pull request whose title names a Jira ticket in parentheses brings that ticket too (see
+    `_implied_tickets`), placed right after the pull request or its stack.
     """
     jira = jira or Jira(config.jira.command, config.jira.site)
     names = names or Nicknames()
@@ -147,20 +152,7 @@ def gather(
         try:
             if link.kind == LinkKind.JIRA and link.ref:
                 on_step(f"Reading {link.ref} from Jira")
-                ticket = jira.view(link.ref)
-                link.title, link.status = ticket.summary, ticket.status
-                link.url = link.url or ticket.url
-                link.fetched_at = store.now()
-                gathered.facts = {
-                    k: v
-                    for k, v in (
-                        ("type", ticket.type),
-                        ("assignee", ticket.assignee),
-                        ("priority", ticket.priority),
-                    )
-                    if v
-                }
-                gathered.body = ticket.description
+                _fill_ticket(gathered, jira)
             elif link.kind == LinkKind.GITHUB and link.url and config.github.fetch:
                 item = github_item(link.url)
                 if item is None or link.ref in pulls:
@@ -185,18 +177,69 @@ def gather(
             gathered.error = e
     for ref, (pr, stack) in pulls.items():
         _fill_pull(results[id(by_ref[ref])], pr, stack, names)
+    have = {link.ref for link in [*(known or []), *links] if link.kind == LinkKind.JIRA}
+    implied = _implied_tickets([by_ref[ref] for ref in pulls], have, config, jira, on_step)
 
     ordered: list[Gathered] = []
     placed: set[str] = set()
     for link in links:
         if link.stack is None:
             ordered.append(results[id(link)])
+            ordered += implied.get(link.ref or "", [])
         elif link.stack not in placed:
             placed.add(link.stack)
             members = [m for m in by_ref.values() if m.stack == link.stack]
             members.sort(key=lambda m: m.stack_position or 0)
             ordered += [results[id(m)] for m in members]
+            ordered += [ticket for m in members for ticket in implied.get(m.ref or "", [])]
     return ordered
+
+
+def _fill_ticket(gathered: Gathered, jira: Jira) -> None:
+    """Read a Jira ticket onto its link."""
+    link = gathered.link
+    assert link.ref is not None
+    ticket = jira.view(link.ref)
+    link.title, link.status = ticket.summary, ticket.status
+    link.url = link.url or ticket.url
+    link.fetched_at = store.now()
+    facts = (("type", ticket.type), ("assignee", ticket.assignee), ("priority", ticket.priority))
+    gathered.facts = {k: v for k, v in facts if v}
+    gathered.body = ticket.description
+
+
+def _implied_tickets(
+    pulls: list[Link],
+    have: set[str | None],
+    config: Config,
+    jira: Jira,
+    on_step: Callable[[str], None],
+) -> dict[str, list[Gathered]]:
+    """The Jira tickets that pull requests name in their titles, by pull request.
+
+    A title like "(PLAT-412) Move the workers" names the ticket that tracks that pull request,
+    so you don't have to link it yourself. Plenty of things in parentheses look like a key
+    without being one ("(UTF-8)"), so a ticket is only added when Jira can read it, or when
+    its project is one you've listed under [jira] keys.
+    """
+    found: dict[str, list[Gathered]] = {}
+    for pull in pulls:
+        key = ticket_in_title(pull.title)
+        if key is None or key in have or pull.ref is None:
+            continue
+        have.add(key)
+        link = from_key(key, config.jira.site)
+        link.role = Role.TICKET  # until Claude says otherwise
+        gathered = Gathered(link, new=True, via=pull.ref)
+        try:
+            on_step(f"Reading {key} (named in {pull.ref}'s title) from Jira")
+            _fill_ticket(gathered, jira)
+        except ToddError as e:
+            if key.rsplit("-", 1)[0] not in config.jira.known_keys:
+                continue  # probably not a ticket at all
+            gathered.error = e
+        found.setdefault(pull.ref, []).append(gathered)
+    return found
 
 
 # ── Asking Claude ────────────────────────────────────────────────────────────
@@ -291,8 +334,9 @@ as a whole. Each task has title, needs_title, next_action, track (todo or waitin
 priority, due, due_hint, people and follow_ups, meaning what they mean above but for that task, \
 plus:
   - links: the indexes of the links that belong to that task, like its Jira ticket and its pull \
-requests. Every pull request in a stack goes with the same task. Links about the project as a \
-whole (an epic, the conversation it came from) belong to no task.
+requests. Every pull request in a stack goes with the same task, and a ticket named in a pull \
+request's title goes with that pull request's task. Links about the project as a whole (an \
+epic, the conversation it came from) belong to no task.
   - after: the numbers of the tasks (1 for the first) that must be done before this one can \
 start. Usually just the one before it, and empty for the first. Tasks that can go on at the \
 same time don't wait on each other: two tasks that both follow task 1 each have after [1], a \
@@ -416,6 +460,11 @@ def _describe_link(index: int, gathered: Gathered) -> str:
                 lines.append("(todd can't read Slack; the person didn't paste this message.)")
         case LinkKind.JIRA:
             lines.append(f"Jira ticket {link.ref}")
+            if gathered.via:
+                lines.append(
+                    f"Named in the title of pull request {gathered.via}: the ticket that "
+                    "tracks that pull request. The person didn't link it themselves."
+                )
         case LinkKind.GITHUB:
             item = github_item(link.url) if link.url else None
             what = "pull request" if item is None or item.is_pr else "issue"
@@ -827,8 +876,9 @@ def _write(conn: sqlite3.Connection, task_id: int, filing: Filing) -> None:
 def owners(filing: Filing, links: list[Link]) -> dict[int, int]:
     """For a project: which of its tasks (by number) each link goes to (by index).
 
-    A pull request brings the rest of its stack: a stack is one piece of work. Links no task
-    claims stay with the project.
+    A pull request brings the rest of its stack: a stack is one piece of work. It also brings
+    the ticket its title names, unless Claude gave that to another task. Links no task claims
+    stay with the project.
     """
     owned: dict[int, int] = {}
     for number, item in enumerate(filing.tasks, 1):
@@ -841,6 +891,12 @@ def owners(filing: Filing, links: list[Link]) -> dict[int, int]:
             )
             for member in group:
                 owned.setdefault(member, number)
+    index_of = {link.ref: i for i, link in enumerate(links, 1) if link.kind == LinkKind.JIRA}
+    for index, link in enumerate(links, 1):
+        if link.kind != LinkKind.GITHUB or index not in owned:
+            continue
+        if (ticket := index_of.get(ticket_in_title(link.title))) is not None:
+            owned.setdefault(ticket, owned[index])
     return owned
 
 
@@ -907,7 +963,7 @@ def apply(
                 "author": link.author or verdict.author,
             }
             if not link.role_fixed:
-                fields["role"] = verdict.role
+                fields["role"] = verdict.role or link.role
             store.update_link(conn, link.id, **fields)
         if task.state == State.INBOX:
             state = State.TODO if becomes_project else filing.track
