@@ -145,7 +145,7 @@ EPILOG = (
     "[bold]Examples[/]\n\n"
     '  [cyan]todd add "reply to Priya re: Q3 numbers" https://acme.slack.com/archives/D…/p…[/]\n'
     "  [cyan]todd[/]                     your queue, with follow-ups that are due\n"
-    "  [cyan]todd start 12[/]            begin #12 (moves its Jira ticket to In Progress)\n"
+    "  [cyan]todd start 12[/]            begin #12 (asks about moving its Jira ticket)\n"
     "  [cyan]todd wait 12 Priya to confirm[/]\n"
     "  [cyan]todd done 12[/]             finish it: Jira, follow-ups, then reply in Slack\n"
     "  [cyan]todd links 12[/]            every link on #12, one per line\n"
@@ -1069,7 +1069,7 @@ def move(
     no_jira: NoJira = False,
     local: Local = False,
 ) -> None:
-    """Move a task to any state. Jira follows your mapping unless you say [bold]--no-jira[/]."""
+    """Move a task to any state; todd asks before changing a Jira ticket."""
     state = parse_state(to)
     if state is None:
         raise _fail(
@@ -1103,7 +1103,7 @@ def done(
     no_jira: NoJira = False,
     local: Local = False,
 ) -> None:
-    """Finish a task. todd offers to update Jira and reply in Slack."""
+    """Finish a task: then Jira, any follow-ups, and replying in Slack."""
     _transition(ctx, task_id, State.DONE, words, yes=yes, local=local, no_jira=no_jira)
 
 
@@ -1736,6 +1736,40 @@ def _doctor_pr(url: str, names: Nicknames) -> None:
         if pr.comments:
             detail.append(render.plural(len(pr.comments), "comment"))
         out.print(Text("     " + " · ".join(detail), style=render.FAINT))
+
+
+# ── How `todd --help` lists the commands ────────────────────────────────────
+
+# Headings in the order they appear, each with its commands in order: what you do first
+# (capture), then looking at things, working tasks through their states, the outside tools,
+# the people side, and setup. (Typer lists a command group like followup after the plain
+# commands under the same heading.)
+HELP_LAYOUT = {
+    "Capture and edit": ["add", "link", "note", "edit", "role", "triage"],
+    "Look": ["ls", "show", "following", "links", "open"],
+    "Move": ["start", "wait", "review", "done", "follow", "drop", "reopen", "move"],
+    "Jira, GitHub and Slack": ["reply", "sync", "refresh"],
+    "People and follow-ups": ["nick", "followup"],
+    "Setup": ["config", "doctor"],
+}
+
+
+def command_name(info: typer.models.CommandInfo) -> str:
+    return info.name or getattr(info.callback, "__name__", "").replace("_", "-")
+
+
+def _lay_out_help() -> None:
+    order = [name for names in HELP_LAYOUT.values() for name in names]
+    heading = {name: title for title, names in HELP_LAYOUT.items() for name in names}
+    app.registered_commands.sort(key=lambda info: order.index(command_name(info)))
+    for info in app.registered_commands:
+        info.rich_help_panel = heading[command_name(info)]
+    for group in app.registered_groups:
+        if group.name in heading:
+            group.rich_help_panel = heading[group.name]
+
+
+_lay_out_help()
 
 
 def main() -> None:
