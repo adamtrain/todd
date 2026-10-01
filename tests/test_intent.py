@@ -18,31 +18,31 @@ def plan(
     }
 
 
-WEBHOOK, RUNBOOK = "Ship the Torii webhook", "Write the Torii runbook"
+WEBHOOK, RUNBOOK = "Ship the signing webhook", "Write the webhook runbook"
 
 
 def two_tasks(shell) -> None:
-    """#1 Ship the Torii webhook, #2 Write the Torii runbook."""
+    """#1 Ship the signing webhook, #2 Write the webhook runbook."""
     shell.answers += [
-        answer(title="Ship the Torii webhook", links=[]),
-        answer(title="Write the Torii runbook", links=[]),
+        answer(title="Ship the signing webhook", links=[]),
+        answer(title="Write the webhook runbook", links=[]),
     ]
-    todd("add", "ship the torii webhook", "-y")
-    todd("add", "write the torii runbook", "-y")
+    todd("add", "ship the signing webhook", "-y")
+    todd("add", "write the webhook runbook", "-y")
 
 
 def test_saying_it_runs_the_commands_claude_works_out(shell, picks):
     two_tasks(shell)
     shell.answers.append(
         plan(
-            (["done", "1", "-J"], "Finish #1 Ship the Torii webhook"),
-            (["start", "2", "-J"], "Start #2 Write the Torii runbook"),
+            (["done", "1", "-J"], "Finish #1 Ship the signing webhook"),
+            (["start", "2", "-J"], "Start #2 Write the webhook runbook"),
         )
     )
-    result = todd("move the current Torii task to done and start the next one")
+    result = todd("move the current webhook task to done and start the next one")
     assert result.exit_code == 0, result.output
     out = result.output
-    assert "todd will" in out and "Finish #1 Ship the Torii webhook" in out
+    assert "todd will" in out and "Finish #1 Ship the signing webhook" in out
     assert "todd done 1 -J" in out
     assert picks.asked[-1][:2] == ("Do it?", ["do", "change", "cancel"])
     assert picks.asked[-1][2] == "do"  # the highlight starts on Do it
@@ -54,24 +54,24 @@ def test_saying_it_runs_the_commands_claude_works_out(shell, picks):
 
     request = shell.prompts[-1]
     assert (
-        "<request>move the current Torii task to done and start the next one</request>" in request
+        "<request>move the current webhook task to done and start the next one</request>" in request
     )
-    assert "#1 [to do] Ship the Torii webhook" in request
+    assert "#1 [to do] Ship the signing webhook" in request
     assert "todd done TASK_ID [WORDS...]" in request
 
 
 def test_unquoted_words_work_too_even_when_they_start_with_a_command(shell, picks):
     two_tasks(shell)
-    shell.answers.append(plan((["show", "2"], "Show #2 Write the Torii runbook")))
+    shell.answers.append(plan((["show", "2"], "Show #2 Write the webhook runbook")))
     out = todd("show", "me", "the", "runbook", "task").output
     assert "<request>show me the runbook task</request>" in shell.prompts[-1]
-    assert "Write the Torii runbook" in out
+    assert "Write the webhook runbook" in out
 
 
 def test_commands_are_still_commands(shell):
     two_tasks(shell)
     asked = len(shell.prompts)
-    assert "Ship the Torii webhook" in todd("show", "1").output
+    assert "Ship the signing webhook" in todd("show", "1").output
     assert len(shell.prompts) == asked  # no Claude
 
 
@@ -79,19 +79,19 @@ def test_looking_runs_without_asking(shell, picks):
     two_tasks(shell)
     shell.answers.append(plan((["ls", "--area", "platform"], "List your platform tasks")))
     out = todd("what's on my platform plate?").output
-    assert "Ship the Torii webhook" in out
+    assert "Ship the signing webhook" in out
     assert all(q != "Do it?" for q, _, _ in picks.asked)
 
 
 def test_claude_asks_when_it_cannot_tell(shell, picks):
     two_tasks(shell)
     shell.answers += [
-        plan(question="Which Torii task: #1 Ship the webhook, or #2 Write the runbook?"),
-        plan((["done", "2", "-J"], "Finish #2 Write the Torii runbook")),
+        plan(question="Which webhook task: #1 Ship the webhook, or #2 Write the runbook?"),
+        plan((["done", "2", "-J"], "Finish #2 Write the webhook runbook")),
     ]
-    out = todd("finish the torii thing", input="the runbook\n").output
-    assert "? Which Torii task" in out
-    assert "You asked: Which Torii task" in shell.prompts[-1]
+    out = todd("finish the webhook thing", input="the runbook\n").output
+    assert "? Which webhook task" in out
+    assert "You asked: Which webhook task" in shell.prompts[-1]
     assert "<answer>the runbook</answer>" in shell.prompts[-1]
     assert saved(2).state == State.DONE
 
@@ -215,7 +215,7 @@ def test_context_lists_what_claude_can_refer_to(shell, tmp_path):
     from .conftest import TODAY
 
     text = intent.context(conn, TODAY, Nicknames(names={"niik": "Nik"}))
-    assert "Tasks:\n#1 [to do] Ship the Torii webhook" in text
+    assert "Tasks:\n#1 [to do] Ship the signing webhook" in text
     assert "↪1 Tell Theo (task #1, when done)" in text
     assert "@niik is Nik" in text
 
@@ -224,7 +224,7 @@ def test_claude_is_told_what_the_states_mean(shell, picks):
     two_tasks(shell)
     shell.answers.append(plan((["now"], "Show what you can act on")))
     out = todd("what can I work on right now?").output
-    assert "Ship the Torii webhook" in out
+    assert "Ship the signing webhook" in out
     assert all(q != "Do it?" for q, _, _ in picks.asked)  # looking needs no go-ahead
     request = shell.prompts[-1]
     assert "<states>" in request and "- in_review (in review): Your work is done" in request
@@ -241,15 +241,15 @@ def test_context_gives_projects_their_derived_state_and_marks_blocked_tasks(shel
 
     shell.answers.append(
         answer(
-            title="Torii",
+            title="Webhooks",
             links=[],
             tasks=[a_task("Ship it", [], [], track="waiting"), a_task("Document it", [], [1])],
         )
     )
-    todd("add", "ship torii, then document it", "-y")
+    todd("add", "ship the webhook, then document it", "-y")
     text = intent.context(db.connect(db.db_path()), TODAY, Nicknames())
-    assert "#1 [project · waiting] Torii · tasks in order: #2 (waiting), #3 (blocked)" in text
-    assert "#3 [blocked] Document it · in project #1 “Torii”" in text
+    assert "#1 [project · waiting] Webhooks · tasks in order: #2 (waiting), #3 (blocked)" in text
+    assert "#3 [blocked] Document it · in project #1 “Webhooks”" in text
     todd("done", "2", "-J")
     todd("done", "2", "-J")  # "Document it" moved down to #2
     text = intent.context(db.connect(db.db_path()), TODAY, Nicknames())
@@ -263,30 +263,30 @@ def test_claude_comes_back_for_steps_that_depend_on_earlier_ones(shell, picks):
     two_tasks(shell)
     shell.answers += [
         plan(
-            (["add", "audit the Torii logs", "-y"], "Add a task: audit the Torii logs"),
+            (["add", "audit the webhook logs", "-y"], "Add a task: audit the webhook logs"),
             then="make it wait on the runbook and start it",
         ),
-        answer(title="Audit the Torii logs", links=[]),
+        answer(title="Audit the webhook logs", links=[]),
         plan(
-            (["block", "3", "--on", "2"], "Make #3 Audit the Torii logs wait on #2"),
-            (["start", "3", "-J"], "Start #3 Audit the Torii logs"),
+            (["block", "3", "--on", "2"], "Make #3 Audit the webhook logs wait on #2"),
+            (["start", "3", "-J"], "Start #3 Audit the webhook logs"),
         ),
     ]
-    result = todd("add a task to audit the torii logs, make it wait on the runbook, and start it")
+    result = todd("add a task to audit the webhook logs, make it wait on the runbook, and start it")
     assert result.exit_code == 0, result.output
     out = result.output
     assert "then: make it wait on the runbook and start it" in out
     assert out.index("todd will") < out.index("Filed #3") < out.index("Next, todd will")
-    audit = named("Audit the Torii logs")
+    audit = named("Audit the webhook logs")
     assert audit.state == State.DOING and [b.id for b in audit.blockers] == [2]
     # You're asked about each round of steps, starting on Do it.
     asked = [(question, default) for question, _, default in picks.asked if question == "Do it?"]
     assert asked == [("Do it?", "do"), ("Do it?", "do")]
 
     again = shell.prompts[-1]
-    assert "<done>" in again and '- todd add "audit the Torii logs" -y (Add a task' in again
+    assert "<done>" in again and '- todd add "audit the webhook logs" -y (Add a task' in again
     assert "You said you would then: make it wait on the runbook and start it" in again
-    assert "#3 [to do] Audit the Torii logs" in again  # the tasks as they are now
+    assert "#3 [to do] Audit the webhook logs" in again  # the tasks as they are now
     assert "Give the steps that are left." in again
 
 

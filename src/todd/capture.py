@@ -4,7 +4,7 @@ The text format, used by the editor and by piped input:
 
     Reply to Priya with the Q3 migration numbers
 
-    https://acme.slack.com/archives/D024BE91L/p1727712000123456
+    https://example.slack.com/archives/D024BE91L/p1727712000123456
     Hey, can you send me the Q3 migration numbers before Thursday's sync?
 
     PROJ-123

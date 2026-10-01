@@ -200,7 +200,7 @@ that do what they asked, in order: as many steps as it takes to do all of it.
 
 Each step is the list of words that follow `todd` on the command line (argv), split the way a \
 shell would split them, and says: a short plain description that names each task by number and \
-title, like "Finish #12 Ship the Torii webhook".
+title, like "Finish #12 Ship the signing webhook".
 
 - Use only the commands and options in <commands>, and only task numbers from <tasks>. Never \
 make up a task number, an option or a value.

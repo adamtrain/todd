@@ -269,7 +269,7 @@ them. Use that name in people, waiting_on and follow_ups; otherwise use the logi
 Usually a capture is one task. Sometimes it's a project: work the person moves forward through \
 several tasks, often with a ticket for each. Usually later tasks can't start until earlier ones \
 are done ("waiting on review for this stack; once it's in, a bug bash, then configure the \
-feature for Acme"); sometimes some of them can go on at the same time. Then the record \
+feature for the customer"); sometimes some of them can go on at the same time. Then the record \
 describes the project as a whole, and tasks lists its tasks in order. Only list tasks the \
 capture names; never split one piece of work into tasks of your own invention. For a single \
 task, tasks is empty. Something the person is only following is always a single task, never a \
@@ -333,7 +333,7 @@ For a pull request in a stack, say what that one does; todd already shows its po
 there's nothing useful to say.
   - author: who wrote the pasted message, when the text makes that clear. Otherwise null.
 - tasks: for a project, its tasks in order; otherwise empty. For a project, the fields above \
-describe the project: title names its goal ("Launch the live feature for Acme"), next_action is \
+describe the project: title names its goal ("Launch the live feature"), next_action is \
 the next thing to do in its first open task, and follow_ups are only the ones about the project \
 as a whole. Each task has title, needs_title, next_action, track (todo or waiting), waiting_on, \
 priority, due, due_hint, defer, people and follow_ups, meaning what they mean above but for \

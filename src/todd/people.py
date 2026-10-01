@@ -3,7 +3,7 @@
 Kept in nicknames.toml beside the config (todd rewrites it, so it has no comments):
 
     "priya-n" = "Priya"
-    "acme/platform-reviewers" = "Platform reviewers"
+    "example/platform-reviewers" = "Platform reviewers"
 """
 
 from __future__ import annotations

@@ -55,7 +55,7 @@ err = Console(stderr=True, highlight=False)
 class Listening(TyperGroup):
     """Anything that isn't a command is a request in your own words, for `todd do`.
 
-    So `todd "move the Torii task to done"` works, and so does `todd show me what's waiting
+    So `todd "move the webhook task to done"` works, and so does `todd show me what's waiting
     on Nik`: "show" is a command, but "me what's waiting on Nik" doesn't fit it.
     """
 
@@ -296,9 +296,9 @@ def _plain(text: str) -> None:
 
 EPILOG = (
     "[bold]Examples[/]\n\n"
-    '  [cyan]todd "move the Torii task to done and start the next one"[/]\n'
+    '  [cyan]todd "move the webhook task to done and start the next one"[/]\n'
     '  [cyan]todd "what am I waiting on from Nik?"[/]\n'
-    '  [cyan]todd add "reply to Priya re: Q3 numbers" https://acme.slack.com/archives/D…/p…[/]\n'
+    '  [cyan]todd add "reply to Priya re: Q3 numbers" https://example.slack.com/archives/D…/p…[/]\n'
     "  [cyan]todd[/]                     what you can act on now, with follow-ups that are due\n"
     "  [cyan]todd ls[/]                  everything open, by project\n"
     "  [cyan]todd states[/]              every state and what it means\n"
@@ -853,7 +853,7 @@ def add(
 ) -> None:
     """Capture a task. Claude files it: title, next step, due date, follow-ups and more.
 
-    Describe a chain ("…once that's in, a bug bash, then configure it for Acme") and Claude
+    Describe a chain ("…once that's in, a bug bash, then turn it on for the customer") and Claude
     makes a project, with a task for each part waiting on the one before.
 
     Mention follow-ups in your own words ("tell Theo when I'm done") and they're kept too.
