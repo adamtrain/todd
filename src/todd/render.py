@@ -488,14 +488,15 @@ def _elsewhere(counts: dict[str, int], done_this_week: int) -> Text:
                 footer.append(" · ", style=FAINT)
             footer.append(str(counts[name]), style=f"bold {style}")
             footer.append(f" {name}", style=FAINT)
+    if not footer.plain and not done_this_week:
+        return footer
     if footer.plain:
-        footer = Text.assemble(("Not yours to act on now: ", FAINT), footer)
+        footer = Text.assemble(("Not yours to act on now: ", FAINT), footer, "\n")
     if done_this_week:
-        footer.append(" · " if footer.plain else "", style=FAINT)
         footer.append(f"✓ {done_this_week} done this week", style=STATE_COLORS[State.DONE])
-    if footer.plain:
-        footer.append("\ntodd ls", style=f"{FAINT} bold")
-        footer.append(" shows everything, by project", style=FAINT)
+        footer.append(" · ", style=FAINT)
+    footer.append("todd ls", style=f"{FAINT} bold")
+    footer.append(" shows everything, by project", style=FAINT)
     return footer
 
 
