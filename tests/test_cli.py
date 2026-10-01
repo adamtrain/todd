@@ -145,7 +145,8 @@ def test_each_ticket_gets_its_own_question(shell, picks):
     picks.script += ["yes", "no"]
     todd("done", "1")
     assert shell.transitions == [("PLAT-412", "Done")]
-    assert [q for q, _, _ in picks.asked] == ["Move PLAT-412 to Done?", "Move PLAT-413 to Done?"]
+    jira = [q for q, _, _ in picks.asked if q.startswith("Move ")]
+    assert jira == ["Move PLAT-412 to Done?", "Move PLAT-413 to Done?"]
 
 
 def test_yes_and_no_jira_skip_the_question_in_each_direction(filed, picks):
@@ -193,16 +194,14 @@ def test_interactive_done_confirms_jira_then_drafts_a_reply(filed, clipboard, pi
     assert saved().entries[-1].text == "Drafted a Slack reply"
 
 
-def test_interactive_add_asks_for_the_slack_message(shell, monkeypatch):
-    monkeypatch.setattr(cli, "_interactive", lambda: True)
+def test_interactive_add_asks_for_the_slack_message(shell, picks):
     result = todd("add", "reply to Priya", SLACK_DM, input="Hey, numbers?\n\nThanks!\n")
     assert result.exit_code == 0, result.output
     assert "Paste the message" in result.output
     assert saved().links[0].quote == "Hey, numbers?\n\nThanks!"
 
 
-def test_interactive_add_can_skip_the_message(shell, monkeypatch):
-    monkeypatch.setattr(cli, "_interactive", lambda: True)
+def test_interactive_add_can_skip_the_message(shell, picks):
     todd("add", "reply to Priya", SLACK_DM, input="\n")
     assert saved().links[0].quote is None
 

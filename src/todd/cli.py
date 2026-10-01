@@ -356,9 +356,20 @@ def _provisional_title(capture: capturing.Capture) -> str:
     return title[:120] or "Untitled"
 
 
-def _file(session: Session, task: Task, *, label: str = "Filing", as_project: bool = False) -> Task:
+def _file(
+    session: Session,
+    task: Task,
+    *,
+    label: str = "Filing",
+    as_project: bool = False,
+    review: bool = False,
+) -> Task | None:
     """Look up the task's links, then have Claude file it. Returns the task (or the project
-    it became) as saved."""
+    it became) as saved.
+
+    With `review`, you see what Claude would file first, and can add it, ask Claude to
+    change it (as often as you like), or leave things as they were (then this returns None).
+    """
     assert task.id is not None
     config, conn = session.config, session.conn
     w = render.width(err)
@@ -371,17 +382,59 @@ def _file(session: Session, task: Task, *, label: str = "Filing", as_project: bo
         )
     _print_lookups(session, found, w)
     triage.save_lookups(conn, task.id, found)
-    with err.status(render.stage("asking Claude", label), spinner_style=render.ACCENT):
-        filing = triage.ask(
-            task,
-            found,
-            config,
-            used_areas=store.areas(conn),
+    links = [g.link for g in found]
+
+    def ask_claude(step: str, **revising) -> triage.Filing:
+        with err.status(render.stage(step, label), spinner_style=render.ACCENT):
+            return triage.ask(
+                task,
+                found,
+                config,
+                used_areas=store.areas(conn),
+                today=_today(),
+                names=session.names,
+                as_project=as_project,
+                **revising,
+            )
+
+    filing = ask_claude("asking Claude")
+    changes: list[str] = []
+    while review:
+        fresh = triage.splittable(task)
+        owners = triage.owners(filing, links) if filing.is_project else None
+        render.preview(
+            err,
+            filing,
+            links,
             today=_today(),
+            state=None if fresh else task.state,
+            owners=owners,
             names=session.names,
-            as_project=as_project,
         )
-    applied = triage.apply(conn, task, filing, [g.link for g in found], as_project=as_project)
+        choice = ask.choose(
+            "File it?",
+            [
+                ask.Option("add", "Add it"),
+                ask.Option("change", "Change it…"),
+                ask.Option("leave", "Leave it in the inbox" if fresh else "Keep it as it was"),
+            ],
+            default=0,
+            console=err,
+        )
+        if choice == "add":
+            break
+        if choice == "leave":
+            return None
+        change = Prompt.ask(
+            Text.from_markup("  What should Claude change? [dim](Enter to go back)[/]"),
+            console=err,
+            default="",
+            show_default=False,
+        ).strip()
+        if change:
+            changes.append(change)
+            filing = ask_claude("making your changes", previous=filing, changes=changes)
+    applied = triage.apply(conn, task, filing, links, as_project=as_project)
     if _interactive():
         for task_id in [task.id, *applied.tasks]:
             if (each := store.get(conn, task_id)).needs_title:
@@ -499,6 +552,9 @@ def add(
             show_default=False,
         ),
     ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="File it without showing you a preview first.")
+    ] = False,
 ) -> None:
     """Capture a task. Claude files it: title, next step, due date, follow-ups and more.
 
@@ -589,7 +645,7 @@ def add(
         raise _fail(e) from e
 
     try:
-        task = _file(session, task, as_project=as_project)
+        filed = _file(session, task, as_project=as_project, review=_interactive() and not yes)
     except ToddError as e:
         render.error(err, str(e), detail=e.detail, hint=e.hint)
         render.warn(
@@ -601,7 +657,15 @@ def add(
     except KeyboardInterrupt:
         err.print(Text(f"Stopped. #{task.id} is saved in your inbox, unfiled.", style=render.FAINT))
         raise typer.Exit(130) from None
-    _print_filed(session, task)
+    if filed is None:
+        err.print(
+            Text.assemble(
+                (f"#{task.id} is in your inbox, unfiled. File it later with ", render.FAINT),
+                (f"todd triage {task.id}", "bold"),
+            )
+        )
+        return
+    _print_filed(session, filed)
 
 
 def _parse_after(conn: sqlite3.Connection, after: str | None, project: Task) -> list[int]:
@@ -632,6 +696,9 @@ def triage_command(
             help="The task to (re)file. Default: everything in your inbox.", show_default=False
         ),
     ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="File without showing you a preview first.")
+    ] = False,
 ) -> None:
     """Have Claude file a task again, or everything still in your inbox."""
     session = _session(ctx)
@@ -643,7 +710,11 @@ def triage_command(
             return
         for task in targets:
             err.print(Text.assemble(("◇ ", render.ACCENT), (f"#{task.id} ", "bold"), task.title))
-            filed = _file(session, task, label="Refiling" if task.triaged else "Filing")
+            label = "Refiling" if task.triaged else "Filing"
+            filed = _file(session, task, label=label, review=_interactive() and not yes)
+            if filed is None:
+                err.print(Text(f"  Left #{task.id} as it was.", style=render.FAINT))
+                continue
             _print_filed(session, filed)
     except ToddError as e:
         raise _fail(e) from e

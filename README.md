@@ -20,6 +20,9 @@
   through `gh`. Then one Claude call fills in the title, the next concrete step, the kind of work,
   its area (platform, hiring…), the priority, any due date ("before Thursday's sync" becomes a
   date), the people involved, and what each link is for.
+- **You see it before it's saved.** todd shows what Claude would file. Add it, tell Claude what
+  to change ("make it high priority and call it …") as many times as you like, or leave it in
+  your inbox.
 - **Projects, not just tasks.** Describe a chain ("waiting on review for this stack; once it's
   in, a bug bash, then configure the feature for Acme") and Claude files a project with a task
   for each part, in order, each with its own ticket. Later tasks wait, out of your queue, until
@@ -143,6 +146,20 @@ Other commands:
 | `todd nick [login] [name…] [--remove]` | List, set or forget nicknames. |
 | `todd config [--init] [--edit]` | Where todd keeps things, and what it's set to do. |
 | `todd doctor [--claude] [--jira KEY] [--pr URL]` | Check the tools todd uses, and what it makes of a real ticket or PR. |
+
+### Before anything is saved
+
+In a terminal, `todd add` and `todd triage` show what Claude would file (the card, what each
+link is for and, for a project, its tasks and where each link goes) and ask what to do:
+
+```text
+  File it?   Add it   Change it…   Leave it in the inbox    ←/→ Enter
+```
+
+**Change it…** asks what to change, in your own words. Claude gets its previous filing and your
+change, and you see the new version. Changes add up, so you can keep going. **Leave it in the
+inbox** keeps the capture unfiled for `todd triage` later. `-y` files without the preview; so
+does anything without a terminal, like a script.
 
 ### Keeping a Slack message with its link
 

@@ -571,7 +571,9 @@ def facts(task: Task, today: date) -> Text:
     return text
 
 
-def card(task: Task, today: date, w: int, names: Nicknames = NO_NAMES) -> Panel:
+def card(
+    task: Task, today: date, w: int, names: Nicknames = NO_NAMES, *, heading: str | None = None
+) -> Panel:
     color = STATE_COLORS[task.state]
     badge = state_badge(task.state)
     if task.is_project:
@@ -614,14 +616,14 @@ def card(task: Task, today: date, w: int, names: Nicknames = NO_NAMES) -> Panel:
         about.append("with " + ", ".join(task.people))
     if about.plain:
         rows += [Text(), about]
-    if not task.triaged:
+    if not task.triaged and heading is None:
         rows += [Text(), Text("Not filed by Claude yet.", style=FAINT)]
     return Panel(
         Group(*rows),
         box=box.ROUNDED,
         border_style=color,
         padding=(0, 1),
-        title=Text(f" #{task.id} ", style=f"bold {color}"),
+        title=Text(f" {heading or f'#{task.id}'} ", style=f"bold {color}"),
         title_align="left",
         width=w,
     )
@@ -873,6 +875,102 @@ def show(
         console.print()
         console.print(section("Timeline", w), width=w)
         console.print(Padding(timeline(task.entries, today), (0, 0, 0, 4)), width=w)
+    console.print()
+
+
+# ── Previewing a filing ──────────────────────────────────────────────────────
+
+
+def _as_task(filing: Any, state: State) -> Task:
+    """A filing dressed as a task, so it can be shown the way it will look."""
+    return Task(
+        title=filing.title,
+        state=state,
+        next_action=filing.next_action,
+        kind=filing.kind,
+        area=filing.area,
+        priority=filing.priority,
+        due=filing.due,
+        due_hint=filing.due_hint,
+        waiting_on=filing.waiting_on,
+        needs_title=filing.needs_title,
+        people=filing.people,
+        followups=filing.followups,
+        is_project=filing.is_project,
+        triaged_at=datetime.now(),
+    )
+
+
+def preview(
+    console: Console,
+    filing: Any,
+    links: list[Link],
+    *,
+    today: date,
+    state: State | None = None,
+    owners: dict[int, int] | None = None,
+    names: Nicknames = NO_NAMES,
+) -> None:
+    """What Claude would file, before anything is saved: the card, what each link is for and,
+    for a project, its tasks with their links and what each waits on."""
+    w = width(console)
+    shown = State.TODO if filing.is_project else (state or filing.track)
+    console.print()
+    console.print(
+        card(
+            _as_task(filing, shown),
+            today,
+            w,
+            names,
+            heading="Claude would file this · not saved yet",
+        )
+    )
+    owners = owners or {}
+    if links:
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(justify="right", style=FAINT, no_wrap=True, width=3)
+        grid.add_column()
+        for index, link in enumerate(links, 1):
+            verdict = filing.links.get(index)
+            line = Text(linking.label(link), style="bold")
+            role = link.role if link.role_fixed else (verdict.role if verdict else None)
+            if role:
+                line.append(f" · {role.label}", style=FAINT)
+            if verdict and verdict.note:
+                line.append(f" · {verdict.note}", style=FAINT)
+            if index in owners:
+                line.append(f"  → task {owners[index]}", style=PROJECT)
+            grid.add_row(str(index), line)
+        console.print(section("Links", w), width=w)
+        console.print(grid, width=w)
+    if filing.is_project:
+        table = Table(
+            box=None, show_header=False, pad_edge=False, padding=(0, 1), width=w, expand=True
+        )
+        table.add_column(justify="right", style=FAINT, no_wrap=True, width=3)
+        table.add_column(no_wrap=True, width=1)
+        table.add_column(ratio=1)
+        table.add_column(no_wrap=True, width=22, overflow="ellipsis")
+        for number, item in enumerate(filing.tasks, 1):
+            detail = None
+            if item.after:
+                detail = Text("after " + ", ".join(f"task {n}" for n in item.after), style=FAINT)
+            elif item.track == State.WAITING and item.waiting_on:
+                detail = Text(f"waiting on {item.waiting_on}", style=WARN)
+            elif item.next_action:
+                detail = Text(f"→ {item.next_action}", style=FAINT)
+            title = Text(item.title)
+            if item.needs_title:
+                title.append("  (needs a title)", style=WARN)
+            mine = [linking.label(links[i - 1]) for i, n in sorted(owners.items()) if n == number]
+            table.add_row(
+                str(number),
+                Text("◌" if item.after else "●", style=FAINT if item.after else OK),
+                Group(title, detail) if detail is not None else title,
+                Text(" · ".join(mine), style=FAINT),
+            )
+        console.print(section(f"Tasks · {plural(len(filing.tasks), 'task')}", w, PROJECT), width=w)
+        console.print(table, width=w)
     console.print()
 
 

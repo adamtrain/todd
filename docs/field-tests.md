@@ -77,6 +77,9 @@ When todd asks, paste the Slack message and press Ctrl-D.
       Note anything Claude gets consistently wrong; that's prompt tuning.
 - [ ] `todd show <n>` shows the message under its link, with who wrote it.
 - [ ] `todd add -e` opens your editor and captures what you write.
+- [ ] Before anything is saved you see "Claude would file this · not saved yet". Pick Change it…,
+      ask for something ("call it …, make it high priority"), and the next preview has it.
+      Leave it in the inbox leaves it unfiled; `-y` skips the preview.
 
 ## 5. Moving a ticket
 

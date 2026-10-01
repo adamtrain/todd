@@ -289,8 +289,7 @@ def test_6_claude_says_when_it_cant_tell_what_something_is(shell):
     assert "needs a title" not in todd().output
 
 
-def test_6b_asked_for_a_title_right_away_in_a_terminal(shell, monkeypatch):
-    monkeypatch.setattr(cli, "_interactive", lambda: True)
+def test_6b_asked_for_a_title_right_away_in_a_terminal(shell, picks):
     shell.answers.append(mary())
     # Enter skips pasting the Slack message; then the title.
     result = todd(
