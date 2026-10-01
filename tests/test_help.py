@@ -21,7 +21,9 @@ def test_every_command_has_a_place_in_the_help():
 
 def test_help_follows_the_layout(monkeypatch):
     monkeypatch.setenv("COLUMNS", "120")
-    help_text = CliRunner().invoke(cli.app, ["--help"]).output
+    colored = CliRunner().invoke(cli.app, ["--help"]).output
+    # On GitHub Actions the help comes out in color even when captured.
+    help_text = re.sub(r"\x1b\[[0-9;]*m", "", colored)
     headings = [line for line in help_text.splitlines() if line.startswith("╭─")]
     assert [re.sub(r"[╭─╮ ]+", " ", h).strip() for h in headings] == [
         "Options",
