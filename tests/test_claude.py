@@ -74,3 +74,37 @@ def test_missing_claude(shell):
     with pytest.raises(ToddError) as e:
         Claude().text("p", system="s")
     assert "Install Claude Code" in (e.value.hint or "")
+
+
+def verbose(envelope: dict) -> list[dict]:
+    """How `claude -p --output-format json` answers in verbose mode: every message, result last.
+    The shape is from a real run of Claude Code 2.1.281 with --verbose."""
+    return [
+        {"type": "system", "subtype": "init", "session_id": "s", "tools": [], "model": "m"},
+        {"type": "assistant", "message": {"role": "assistant", "content": []}},
+        {"type": "user", "message": {"role": "user", "content": []}},
+        {"type": "rate_limit_event"},
+        {"type": "result", "subtype": "success", **envelope},
+    ]
+
+
+def test_verbose_mode_replies_are_understood(shell):
+    envelope = {"is_error": False, "result": '{"ok": true}', "structured_output": {"ok": True}}
+    shell.answers.append(Result(0, json.dumps(verbose(envelope)), ""))
+    assert Claude().structured("p", system="s", schema=SCHEMA) == {"ok": True}
+
+
+def test_verbose_mode_errors_are_still_errors(shell):
+    envelope = {"is_error": True, "result": "Credit balance is too low"}
+    shell.answers.append(Result(0, json.dumps(verbose(envelope)), ""))
+    with pytest.raises(ToddError, match="couldn't finish") as e:
+        Claude().structured("p", system="s", schema=SCHEMA)
+    assert "Credit balance" in (e.value.detail or "")
+
+
+@pytest.mark.parametrize("reply", ["[]", '[{"type": "system"}]', "42", '"ok"'])
+def test_an_unexpected_reply_says_what_it_was(shell, reply):
+    shell.answers.append(Result(0, reply, ""))
+    with pytest.raises(ToddError, match="wasn't what todd expected") as e:
+        Claude().structured("p", system="s", schema=SCHEMA)
+    assert e.value.detail == f"It sent: {reply}"

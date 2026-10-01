@@ -17,6 +17,21 @@ from todd.config import ClaudeConfig
 from todd.errors import ToddError
 
 
+def result_of(reply: Any) -> dict[str, Any] | None:
+    """The result object from `claude -p --output-format json`.
+
+    Usually that's the whole reply. In verbose mode (`--verbose`, or `"verbose": true` in
+    Claude Code's settings, which an employer can set) it's a list of every message in the
+    conversation instead, with the result last.
+    """
+    if isinstance(reply, dict):
+        return reply
+    if isinstance(reply, list):
+        results = [m for m in reply if isinstance(m, dict) and m.get("type") == "result"]
+        return results[-1] if results else None
+    return None
+
+
 class Claude:
     def __init__(self, config: ClaudeConfig | None = None):
         self.config = config or ClaudeConfig()
@@ -73,8 +88,13 @@ class Claude:
                 detail=result.complaint or None,
                 hint='Check that [bold]claude -p "hi"[/] works in your terminal.',
             ) from None
-        if not isinstance(envelope, dict):
-            raise ToddError("Claude Code's reply wasn't what todd expected.")
+        envelope = result_of(envelope)
+        if envelope is None:
+            raise ToddError(
+                "Claude Code's reply wasn't what todd expected.",
+                detail=f"It sent: {result.stdout.strip()[:300]}",
+                hint="Please send this along with [bold]claude --version[/].",
+            )
         if envelope.get("is_error") or not result.ok:
             detail = envelope.get("result") or envelope.get("subtype") or result.complaint
             raise ToddError("Claude couldn't finish.", detail=str(detail)[:500])
