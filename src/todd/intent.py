@@ -3,7 +3,8 @@
 Claude gets a reference of every todd command (made from the CLI itself, so it can't drift), your
 current tasks, and what you said. It answers with a plan: real todd command lines, each with a
 plain description. todd checks every line parses before showing you the plan, then runs them
-one by one through the ordinary commands, with all their usual questions.
+one by one through the ordinary commands. Agreeing to the plan agrees to the tasks it adds, so
+those are filed without a preview each; anything else asks as it usually would.
 """
 
 from __future__ import annotations

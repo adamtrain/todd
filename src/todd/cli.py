@@ -144,10 +144,19 @@ def _session(ctx: typer.Context) -> Session:
 class _Plan:
     """A plan's steps were written with the numbers as they were, so while there are steps
     still to come (`waiting`), numbers stay put. They settle during the last step, which
-    reports against the numbers the plan `began` with."""
+    reports against the numbers the plan `began` with.
+
+    While a plan is `running`, you've already agreed to its steps, so filing doesn't stop to
+    preview each new task: it's filed and shown."""
 
     waiting = False
+    running = False
     began: store.Numbers | None = None
+
+
+def _preview_filing(yes: bool) -> bool:
+    """Whether to show what Claude would file and ask before filing it."""
+    return _interactive() and not yes and not _Plan.running
 
 
 def _settle(session: Session, *, final: bool = False) -> store.Renumbered:
@@ -948,7 +957,7 @@ def add(
         raise _fail(e) from e
 
     try:
-        filed = _file(session, task, as_project=as_project, review=_interactive() and not yes)
+        filed = _file(session, task, as_project=as_project, review=_preview_filing(yes))
     except ToddError as e:
         render.error(err, str(e), detail=e.detail, hint=e.hint)
         render.warn(
@@ -1014,7 +1023,7 @@ def triage_command(
         for task in targets:
             err.print(Text.assemble(("◇ ", render.ACCENT), (f"#{task.id} ", "bold"), task.title))
             label = "Refiling" if task.triaged else "Filing"
-            filed = _file(session, task, label=label, review=_interactive() and not yes)
+            filed = _file(session, task, label=label, review=_preview_filing(yes))
             if filed is None:
                 err.print(Text(f"  Left #{task.id} as it was.", style=render.FAINT))
                 continue
@@ -2587,6 +2596,16 @@ def _run_plan(session: Session, group: TyperGroup, steps: list[intent.Step]) -> 
     base = ["--db", str(session.db_path), "--config", str(session.config_path)]
     session.numbers = store.numbers(session.conn)  # as they are now: this may be a later round
     _Plan.began = session.numbers
+    _Plan.running = True
+    try:
+        _run_steps(session, group, base, steps)
+    finally:
+        _Plan.running = False
+
+
+def _run_steps(
+    session: Session, group: TyperGroup, base: list[str], steps: list[intent.Step]
+) -> None:
     for i, step in enumerate(steps, 1):
         if len(steps) > 1:
             err.print(Text.assemble((f"▶ {i}/{len(steps)} ", render.ACCENT), (step.says, "bold")))

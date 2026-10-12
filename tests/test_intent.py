@@ -167,6 +167,22 @@ def test_something_new_becomes_a_capture(shell, picks):
     assert saved(1).title == "Call Mike about the RFC"
 
 
+def test_agreeing_to_the_plan_files_its_new_tasks_without_asking_again(shell, picks):
+    shell.answers += [
+        plan(
+            (["add", "draft the audit memo"], "Add a task: draft the audit memo"),
+            (["add", "book the offsite"], "Add a task: book the offsite"),
+        ),
+        answer(title="Draft the audit memo", links=[]),
+        answer(title="Book the offsite", links=[]),
+    ]
+    out = todd("I need to draft the audit memo and book the offsite").output
+    assert [q for q, _, _ in picks.asked] == ["Do it?"]  # no "File it?" for each task
+    assert "Filed #1" in out and "Filed #2" in out
+    assert (saved(1).title, saved(2).title) == ("Draft the audit memo", "Book the offsite")
+    assert not cli._Plan.running
+
+
 def test_parse_tidies_claudes_answer():
     parsed = intent.parse(
         {"steps": [{"argv": ["todd", "done", "1"], "says": "Finish #1"}, {"argv": []}, "junk"]}

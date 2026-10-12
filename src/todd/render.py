@@ -403,7 +403,7 @@ def task_table(
     columns: Columns | None = None,
 ) -> Table:
     """Tasks as rows. `project_names` says which project each belongs to (for flat lists);
-    `states` shows each task's place in its project and its state (for lists by project).
+    `states` shows each task's state (for lists by project, which list tasks in order).
 
     Nothing is cut off: titles wrap, and on a narrow terminal each task's links go on a line
     under its title rather than in a column beside it.
@@ -411,12 +411,10 @@ def task_table(
     columns = columns or Columns.fitting(tasks, today, now)
     state_width = len(State.IN_REVIEW.label)
     fixed = [1, columns.number, columns.due, columns.links]
-    fixed += [2, state_width] if states else []
+    fixed += [state_width] if states else []
     fixed += [columns.age] if now is not None else []
     beside = w - sum(fixed) - len(fixed) >= TITLE_WIDTH  # room for links beside the title?
     table = Table(box=None, show_header=False, pad_edge=False, padding=(0, 1), width=w, expand=True)
-    if states:
-        table.add_column(justify="right", style=FAINT, no_wrap=True, width=2)
     table.add_column(no_wrap=True, width=1)
     table.add_column(justify="right", style=FAINT, no_wrap=True, width=columns.number)
     table.add_column(ratio=1)  # the title takes what's left, and wraps
@@ -443,11 +441,11 @@ def task_table(
         badges = link_badges(task)
         if not beside and badges.plain:
             lines.append(badges)
-        row: list[RenderableType] = []
-        if states:
-            row.append(str(task.project_position or ""))
-        row.append(task_mark(task, today) if states else Text(mark, style=mark_style))
-        row += [f"#{task.id}", Group(*lines) if len(lines) > 1 else title]
+        row: list[RenderableType] = [
+            task_mark(task, today) if states else Text(mark, style=mark_style),
+            f"#{task.id}",
+            Group(*lines) if len(lines) > 1 else title,
+        ]
         if states:
             row.append(state_text(task, today))
         row.append(_due(task, today))
