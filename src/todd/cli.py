@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sqlite3
 import stat
 import sys
@@ -22,7 +23,7 @@ from rich.prompt import Prompt
 from rich.text import Text
 from typer.core import TyperGroup
 
-from todd import __version__, ask, db, effects, intent, render, store, system, triage
+from todd import __version__, ask, db, effects, intent, render, store, system, triage, undo
 from todd import capture as capturing
 from todd import config as configuration
 from todd import links as linking
@@ -58,6 +59,10 @@ class Listening(TyperGroup):
     So `todd "move the webhook task to done"` works, and so does `todd show me what's waiting
     on Nik`: "show" is a command, but "me what's waiting on Nik" doesn't fit it.
     """
+
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:  # ty: ignore[invalid-method-override]
+        ctx.meta["todd.argv"] = list(args)  # what was typed, to say what `todd undo` undoes
+        return super().parse_args(ctx, args)
 
     def resolve_command(self, ctx: typer.Context, args: list[str]):  # ty: ignore[invalid-method-override]
         if args and self.is_request(ctx, args):
@@ -104,6 +109,9 @@ class Session:
     # The numbers in use when this command last looked.
     numbers: store.Numbers = field(default_factory=store.Numbers)
     looking: bool = False  # only here to look (todd watch): it never renumbers anything
+    undoing: bool = False  # todd undo: going back isn't itself a change to undo
+    command: str = "todd"  # as typed
+    _before: undo.Before | None = None
 
     @property
     def names(self) -> Nicknames:
@@ -123,6 +131,8 @@ class Session:
         if self._conn is None:
             self._conn = db.connect(self.db_path)
             self.numbers = store.numbers(self._conn)
+            if not self.undoing:
+                self._before = undo.Before(self._conn)
         return self._conn
 
     def connect(self) -> sqlite3.Connection:
@@ -133,6 +143,16 @@ class Session:
     def opened(self) -> bool:
         """Whether this command has used the database (and so may have changed it)."""
         return self._conn is not None
+
+    def keep_for_undo(self) -> None:
+        """If this command changed anything, remember how things were, for `todd undo`."""
+        if self._before is None or self._conn is None:
+            return
+        before, self._before = self._before, None
+        try:
+            before.keep(self._conn, self.db_path, self.command)
+        except (OSError, sqlite3.Error) as e:
+            render.warn(err, f"Couldn't save a way to undo this: {e}")
 
 
 def _session(ctx: typer.Context) -> Session:
@@ -349,6 +369,8 @@ def main_callback(
     below (you see the plan first). With nothing at all, shows what you can act on now.
     """
     session = ctx.obj = Session(db.db_path(db_file), db.config_path(config_file))
+    session.command = shlex.join(["todd", *ctx.meta.get("todd.argv", [])])
+    ctx.call_on_close(session.keep_for_undo)  # after settling: closing runs last first
     ctx.call_on_close(lambda: _settle(session, final=True))
     if ctx.invoked_subcommand is None:
         _now(session)
@@ -1983,6 +2005,33 @@ def reopen(
     _transition(ctx, task_id, State.TODO, words, yes=yes, local=local, no_jira=no_jira)
 
 
+@app.command("undo")
+def undo_command(ctx: typer.Context) -> None:
+    """Put todd back how it was before the last command that changed something.
+
+    Run it again to go further back. Jira and Slack are left as they are.
+    """
+    session = _session(ctx)
+    session.undoing = True
+    try:
+        undone = undo.undo(session.conn, session.db_path)
+    except ToddError as e:
+        raise _fail(e) from e
+    session.numbers = store.numbers(session.conn)
+    render.success(
+        err,
+        Text.assemble(
+            "Undid ", (undone.command, "bold"), f", from {render.when(undone.at, _today())}."
+        ),
+    )
+    if undone.outside:
+        render.warn(
+            err,
+            "It also did this outside todd, which is left as it is:\n  "
+            + "\n  ".join(undone.outside),
+        )
+
+
 @app.command()
 def reply(ctx: typer.Context, task_id: TaskId) -> None:
     """Where to reply in Slack about a task, with an offer to draft the reply."""
@@ -2975,7 +3024,7 @@ def _doctor_pr(url: str, names: Nicknames) -> None:
 # the people side, and setup. (Typer lists a command group like followup after the plain
 # commands under the same heading.)
 HELP_LAYOUT = {
-    "Capture and edit": ["add", "link", "note", "edit", "role", "triage"],
+    "Capture and edit": ["add", "link", "note", "edit", "role", "triage", "undo"],
     "Look": ["now", "watch", "ls", "projects", "following", "show", "links", "open", "states"],
     "Move": ["start", "wait", "review", "done", "follow", "defer", "drop", "reopen", "move"],
     "Blocking": ["block", "unblock"],

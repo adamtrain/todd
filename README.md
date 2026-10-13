@@ -249,6 +249,7 @@ number is only good until the next command that finishes or drops something.
 | `todd link 12 <links…>` / `todd note 12 <text>` | Attach more links, or add to the timeline. |
 | `todd edit 12 --title … --due fri --defer mon --priority high --area … --in 7` | Correct what Claude filed. |
 | `todd role 12 3 reply` | Say what link 3 is for. |
+| `todd undo` | Go back to before the last change (again to go further). Jira and Slack stay as they are. |
 | `todd now` / `todd watch` / `todd ls` / `todd projects` / `todd following` | Look at your work. |
 | `todd show 12` / `todd links 12` / `todd open 12 [3]` | One task: everything, its bare links, or open them. |
 | `todd start` / `wait` / `review` / `done` / `follow` / `drop` / `reopen` / `move` | Move a task. |
