@@ -303,6 +303,16 @@ class Section:
     color: str = ""
 
 
+@dataclass(slots=True)
+class Listing:
+    """Everything `todd ls` shows, as it was at one moment."""
+
+    sections: list[Section]
+    today: date
+    now: datetime
+    names: Nicknames = NO_NAMES
+
+
 def _sort_key(task: Task) -> tuple:
     due = task.due.toordinal() if task.due else 10**7
     stamp = task.state_at.timestamp() if task.state_at else 0
@@ -569,7 +579,7 @@ class Watching:
     """The `todd now` view kept on screen by `todd watch`. It lays itself out for whatever
     size the terminal is when it's drawn, and says so when there's more than fits."""
 
-    view: Now
+    view: Now | Listing  # `todd now`, or `todd ls` with `todd watch --ls`
     changed: datetime  # when what's shown last changed
     about: str = ""  # the filters in force, if any
     fit: bool = False  # it has the screen to itself: show what fits, and say if more doesn't
@@ -580,7 +590,11 @@ class Watching:
             (f" · {self.about}" if self.about else "", FAINT),
             (f" · updated {self.changed:%H:%M:%S} · Ctrl-C to stop", FAINT),
         )
-        everything = Group(head, *now_parts(self.view, options.max_width))
+        if isinstance(self.view, Listing):
+            body = listing_parts(self.view, options.max_width)
+        else:
+            body = now_parts(self.view, options.max_width)
+        everything = Group(head, *body)
         lines = console.render_lines(everything, options.update(height=None), pad=False)
         while lines and not any(segment.text.strip() for segment in lines[-1]):
             lines.pop()  # blank lines at the end only cost room
@@ -594,29 +608,23 @@ class Watching:
             yield Segment.line()
 
 
-def overview(
-    console: Console,
-    sections: list[Section],
-    *,
-    today: date,
-    now: datetime,
-    names: Nicknames = NO_NAMES,
-) -> None:
-    """Everything open, by project: each project with its state and its tasks in order, then
-    the tasks that aren't part of a project."""
-    w = width(console)
+def listing_parts(view: Listing, w: int) -> list[RenderableType]:
+    """Everything open, `w` wide, by project: each project with its state and its tasks in
+    order, then the tasks that aren't part of a project."""
+    today, now, sections = view.today, view.now, view.sections
     columns = Columns.fitting((t for section in sections for t in section.tasks), today, now)
-    console.print()
+    blank = Text("")
+    parts: list[RenderableType] = [blank]
     if not any(section.tasks for section in sections):
-        console.print(Text("Nothing open.", style="bold"))
-        console.print(
+        parts += [
+            Text("Nothing open.", style="bold"),
             Text.assemble(
                 ("Add something: ", FAINT),
                 ('todd "remind me to reply to Priya about the migration"', f"bold {ACCENT}"),
-            )
-        )
-        console.print()
-        return
+            ),
+            blank,
+        ]
+        return parts
     for section in sections:
         if not section.tasks:
             continue
@@ -635,12 +643,24 @@ def overview(
             head = Text.assemble(
                 ("▸ ", color), (section.title, f"bold {color}"), (f" {len(section.tasks)}", FAINT)
             )
-        console.print(head, width=w)
         table = task_table(
-            section.tasks, today=today, now=now, w=w - 2, names=names, states=True, columns=columns
+            section.tasks,
+            today=today,
+            now=now,
+            w=w - 2,
+            names=view.names,
+            states=True,
+            columns=columns,
         )
-        console.print(Padding(table, (0, 0, 0, 2)), width=w)
-        console.print()
+        parts += [head, Padding(table, (0, 0, 0, 2)), blank]
+    return parts
+
+
+def overview(console: Console, view: Listing) -> None:
+    """`todd ls`, the whole terminal wide."""
+    w = width(console)
+    for part in listing_parts(view, w):
+        console.print(part, width=w)
 
 
 def glossary(console: Console) -> None:

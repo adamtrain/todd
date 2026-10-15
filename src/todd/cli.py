@@ -8,7 +8,7 @@ import sqlite3
 import stat
 import sys
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -430,6 +430,32 @@ def _now_view(session: Session, area: str | None, person: str | None) -> render.
     )
 
 
+def _listing(
+    session: Session,
+    *,
+    everything: bool = False,
+    following: bool = False,
+    area: str | None = None,
+    person: str | None = None,
+) -> render.Listing:
+    """What `todd ls` shows: everything open, by project, then the tasks that aren't part of one."""
+    conn = session.conn
+    states = None if everything else [s for s in State if not s.closed]
+    wanted = {t.id: t for t in _matching(session, states, area, person)}
+    sections = []
+    for project, tasks in _projects(conn, closed=everything):
+        shown = [t for t in tasks if t.id in wanted]
+        sections.append(render.Section(project.title, shown, project=project, all_tasks=tasks))
+    alone = [t for t in wanted.values() if t.project_id is None]
+    on_your_list = [t for t in alone if t.state != State.FOLLOWING]
+    sections.append(render.Section("No project", render.by_state(on_your_list)))
+    if following or everything:
+        followed = [t for t in alone if t.state == State.FOLLOWING]
+        color = render.STATE_COLORS[State.FOLLOWING]
+        sections.append(render.Section("Following", followed, color=color))
+    return render.Listing(sections, today=_today(), now=store.now(), names=session.names)
+
+
 def _now(session: Session, *, area: str | None = None, person: str | None = None) -> None:
     try:
         session.connect()
@@ -453,18 +479,15 @@ def _ticks(every: float) -> Iterator[None]:
 
 def _watch_frames(
     session: Session,
-    area: str | None,
-    person: str | None,
+    look: Callable[[], render.Now | render.Listing],
     ticks: Iterable[None],
     *,
+    about: str = "",
     fit: bool = False,
 ) -> Iterator[render.Watching | None]:
     """On each tick, the view afresh if anything could have changed it: the database (from
     any terminal), or the clock reaching a new minute. Otherwise None."""
     conn = session.conn
-    about = " · ".join(
-        f"{name} {value}" for name, value in (("area", area), ("person", person)) if value
-    )
     seen: tuple[int, date, int] | None = None
     frame: render.Watching | None = None
     for _ in ticks:
@@ -479,7 +502,7 @@ def _watch_frames(
             changed = (
                 moment if frame is None or seen is None or version != seen[0] else frame.changed
             )
-            frame = render.Watching(_now_view(session, area, person), changed, about, fit)
+            frame = render.Watching(look(), changed, about, fit)
             seen = state
         except (ToddError, sqlite3.Error):
             yield None  # most likely another terminal is mid-write: look again next tick
@@ -532,6 +555,9 @@ def watch(
     ctx: typer.Context,
     area: Area = None,
     person: Person = None,
+    ls_view: Annotated[
+        bool, typer.Option("--ls", help="Keep [bold]todd ls[/] on screen instead of [bold]now[/].")
+    ] = False,
     every: Annotated[
         float,
         typer.Option("--every", help="How often to look for changes, in seconds.", min=0.1),
@@ -540,7 +566,8 @@ def watch(
     """Keep [bold]todd now[/] on screen, redrawn whenever anything changes.
 
     Leave it open in one terminal and work in another: what you can act on stays up to date
-    as tasks are added, moved, finished or come back from being deferred. Ctrl-C stops it.
+    as tasks are added, moved, finished or come back from being deferred. With [bold]--ls[/]
+    it keeps [bold]todd ls[/] on screen instead. Ctrl-C stops it.
     """
     session = _session(ctx)
     session.looking = True
@@ -548,7 +575,15 @@ def watch(
         session.connect()  # before the screen is taken over, so trouble can be reported
     except ToddError as e:
         raise _fail(e) from e
-    frames = _watch_frames(session, area, person, _ticks(every), fit=out.is_terminal)
+
+    def look() -> render.Now | render.Listing:
+        if ls_view:
+            return _listing(session, area=area, person=person)
+        return _now_view(session, area, person)
+
+    filters = [f"{name} {value}" for name, value in (("area", area), ("person", person)) if value]
+    about = " · ".join((["ls"] if ls_view else []) + filters)
+    frames = _watch_frames(session, look, _ticks(every), about=about, fit=out.is_terminal)
     try:
         if not out.is_terminal:
             # Nothing to redraw in place on: write each new view out as it comes.
@@ -587,24 +622,14 @@ def list_tasks(
     """
     session = _session(ctx)
     try:
-        conn = session.conn
+        session.connect()
         _settle(session)
-        states = None if everything else [s for s in State if not s.closed]
-        wanted = {t.id: t for t in _matching(session, states, area, person)}
-        sections = []
-        for project, tasks in _projects(conn, closed=everything):
-            shown = [t for t in tasks if t.id in wanted]
-            sections.append(render.Section(project.title, shown, project=project, all_tasks=tasks))
-        alone = [t for t in wanted.values() if t.project_id is None]
-        on_your_list = [t for t in alone if t.state != State.FOLLOWING]
-        sections.append(render.Section("No project", render.by_state(on_your_list)))
-        if following or everything:
-            followed = [t for t in alone if t.state == State.FOLLOWING]
-            color = render.STATE_COLORS[State.FOLLOWING]
-            sections.append(render.Section("Following", followed, color=color))
+        listing = _listing(
+            session, everything=everything, following=following, area=area, person=person
+        )
     except ToddError as e:
         raise _fail(e) from e
-    render.overview(out, sections, today=_today(), now=store.now(), names=session.names)
+    render.overview(out, listing)
 
 
 @app.command()

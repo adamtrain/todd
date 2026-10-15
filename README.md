@@ -69,6 +69,7 @@ todd "remind me to send Mike the RFC draft tomorrow"    # say it; Claude picks t
 todd add "reply to Priya re: Q3 numbers" https://example.slack.com/archives/D…/p… PLAT-412
 todd                                   # what you can act on now
 todd watch                             # the same, kept on screen as things change
+todd watch --ls                        # todd ls, kept on screen as things change
 todd ls                                # everything open, by project
 todd show 12                           # links, saved messages, reviewers, follow-ups, timeline
 todd start 12                          # doing        (asks about Jira → In Progress)
@@ -137,7 +138,8 @@ what's to do and neither blocked nor deferred, and anything not filed yet. Each 
 project. The rest is counted underneath.
 
 `todd watch` keeps that view on screen and redraws it whenever anything changes, so one terminal
-can show the tasks at hand while you work in another. It only looks; Ctrl-C stops it.
+can show the tasks at hand while you work in another. `todd watch --ls` keeps `todd ls` on screen
+instead. It only looks; Ctrl-C stops it.
 
 `todd ls` is everything open: each project with its state and its tasks in order, then the tasks
 that aren't in a project.

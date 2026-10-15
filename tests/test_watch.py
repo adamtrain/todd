@@ -46,7 +46,7 @@ def clock(monkeypatch):
     return now
 
 
-def watching(monkeypatch, *between):
+def watching(monkeypatch, *between, command=("watch",)):
     """Run `todd watch` for one look, then one more after each of `between` has been done."""
 
     def ticks(every: float):
@@ -56,7 +56,7 @@ def watching(monkeypatch, *between):
             yield
 
     monkeypatch.setattr(cli, "_ticks", ticks)
-    result = todd("watch")
+    result = todd(*command)
     assert result.exit_code == 0, result.output
     return result.output.split("todd watch")[1:]  # one piece per view drawn
 
@@ -126,6 +126,27 @@ def test_filters_are_named_in_the_heading(shell, monkeypatch, clock):
     out = todd("watch", "--area", "platform").output
     assert "todd watch · area platform · updated" in out
     assert "Reply to Priya" in out and "Book the offsite" not in out
+
+
+def test_ls_shows_the_listing_instead_of_now(shell, monkeypatch, clock):
+    add("Reply to Priya")
+    add("Renew the contract", defer_until=date(2026, 10, 1))  # deferred: in ls, not in now
+    monkeypatch.setattr(cli, "_ticks", lambda every: iter([None]))
+    out = todd("watch", "--ls").output
+    assert "todd watch · ls · updated" in out
+    assert "No project" in out and "Reply to Priya" in out and "Renew the contract" in out
+    assert "Follow-ups due" not in out and "Nothing to act on" not in out
+
+
+def test_ls_redraws_when_another_terminal_changes_something(shell, monkeypatch, clock):
+    add("Reply to Priya")
+    first, second = watching(
+        monkeypatch,
+        lambda: add("Book the offsite"),
+        command=("watch", "--ls"),
+    )
+    assert "Book the offsite" not in first and "Book the offsite" in second
+    assert "No project 2" in second
 
 
 def view_of(count: int) -> render.Watching:
